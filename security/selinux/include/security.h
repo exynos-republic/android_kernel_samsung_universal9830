@@ -113,10 +113,7 @@ struct selinux_state {
 	bool initialized;
 	bool policycap[__POLICYDB_CAPABILITY_MAX];
 	bool android_netlink_route;
-<<<<<<< HEAD
 	bool android_netlink_getneigh;
-=======
->>>>>>> ASB-2020-02-05_4.19-q
 	struct selinux_avc *avc;
 	struct selinux_ss *ss;
 };

@@ -3313,13 +3313,8 @@ static int adjust_scalar_min_max_vals(struct bpf_verifier_env *env,
 			dst_reg->smin_value = (u32)(((s32)dst_reg->smin_value) >> umin_val);
 			dst_reg->smax_value = (u32)(((s32)dst_reg->smax_value) >> umin_val);
 		} else {
-<<<<<<< HEAD
-		dst_reg->smin_value >>= umin_val;
-		dst_reg->smax_value >>= umin_val;
-=======
 			dst_reg->smin_value >>= umin_val;
 			dst_reg->smax_value >>= umin_val;
->>>>>>> ASB-2020-02-05_4.19-q
 		}
 
 		dst_reg->var_off = tnum_arshift(dst_reg->var_off, umin_val,

@@ -5418,9 +5418,8 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 
 	}
 
-<<<<<<< HEAD
 	ecs_update();
-=======
+	
 	if (cfs_bandwidth_used()) {
 		/*
 		 * When bandwidth control is enabled; the cfs_rq_throttled()
@@ -5438,7 +5437,6 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 
 	assert_list_leaf_cfs_rq(rq);
 
->>>>>>> ASB-2020-02-05_4.19-q
 	hrtick_update(rq);
 }
 
