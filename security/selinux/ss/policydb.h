@@ -239,7 +239,10 @@ struct genfs {
 struct policydb {
 	int mls_enabled;
 	int android_netlink_route;
+<<<<<<< HEAD
 	int android_netlink_getneigh;
+=======
+>>>>>>> ASB-2020-02-05_4.19-q
 
 	/* symbol tables */
 	struct symtab symtab[SYM_NUM];
