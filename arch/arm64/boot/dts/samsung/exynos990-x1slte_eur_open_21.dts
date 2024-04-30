@@ -7254,7 +7254,7 @@
 
 			hubble_panel_display_modes {
 				native-mode = <0x3b>;
-				exposed-mode = <0x77 0x3b 0x3d 0x3e 0x40>;
+				exposed-mode = <0xdc 0x3b 0x3d 0x3e 0x40>;
 				phandle = <0x58>;
 
 				hubble_panel_display_mode_1440x3200_120hs {
@@ -7275,7 +7275,7 @@
 					dsc_slice_w = <0x2d0>;
 					dsc_slice_h = <0x28>;
 					cmd_lp_ref = <0x1e6e>;
-					phandle = <0x77>;
+					phandle = <0xdc>;
 				};
 
 				hubble_panel_display_mode_1440x3200_60ns {
