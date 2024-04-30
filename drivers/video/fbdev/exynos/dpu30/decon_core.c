@@ -4666,15 +4666,7 @@ static int decon_ioctl(struct fb_info *info, unsigned int cmd,
 			decon_regs.mode_idx = display_mode.index;
 			decon_regs.vrr_config.mode = DECON_WIN_STATE_VRR_NORMALMODE;
 			
-			if (lcd_info->display_mode[display_mode.index].mode.width == DECON_4K_RESOLUTION_WIDTH ||
-			     lcd_info->display_mode[display_mode.index].mode.height == DECON_4K_RESOLUTION_HEIGHT) {
-				/* 
-				 * QHD+ resolution just supports normal mode on all known exynos9830 devices. So
-				 * this path is taken unconditionally when a QHD+ resolution is requested.
-				 */
-				decon_regs.vrr_config.fps = mode->fps;
-				decon_update_resolution(decon, &decon_regs);
-			} else if (((lcd_info->display_mode[lcd_info->cur_mode_idx].mode.width != lcd_info->display_mode[display_mode.index].mode.width) ||
+			if (((lcd_info->display_mode[lcd_info->cur_mode_idx].mode.width != lcd_info->display_mode[display_mode.index].mode.width) ||
 			(lcd_info->display_mode[lcd_info->cur_mode_idx].mode.height != lcd_info->display_mode[display_mode.index].mode.height))) {
 				/* 
 				 * If we are here, means that a resolution change has been requested.
