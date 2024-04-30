@@ -7230,8 +7230,29 @@
 
 			hubble_panel_display_modes {
 				native-mode = <0x3a>;
-				exposed-mode = <0x3a 0x3c 0x3d 0x3f>;
+				exposed-mode = <0x77 0x3a 0x3c 0x3d 0x3f>;
 				phandle = <0x57>;
+
+				hubble_panel_display_mode_1440x3200_120hs {
+					id = "1440x3200_120HS";
+					width = <0x5a0>;
+					height = <0xc80>;
+					refresh_rate = <0x78>;
+					refresh_mode = <0x01>;
+					panel_refresh_rate = <0x78>;
+					panel_refresh_mode = <0x01>;
+					panel_te_st = <0x00>;
+					panel_te_ed = <0x00>;
+					panel_te_sw_skip_count = <0x00>;
+					panel_te_hw_skip_count = <0x00>;
+					dsc_en = <0x01>;
+					dsc_cnt = <0x02>;
+					dsc_slice_num = <0x02>;
+					dsc_slice_w = <0x2d0>;
+					dsc_slice_h = <0x28>;
+					cmd_lp_ref = <0x1e6e>;
+					phandle = <0x77>;
+				};
 
 				hubble_panel_display_mode_1440x3200_60ns {
 					id = "1440x3200_60NS";
