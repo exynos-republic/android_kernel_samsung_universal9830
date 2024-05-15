@@ -10058,6 +10058,7 @@
 		hsi2c5_bus_vib = "/fragment@47/__overlay__/hsi2c5-bus-vib";
 		motor_rst = "/fragment@47/__overlay__/motor-rst";
 		hubble_panel_display_modes = "/fragment@panel_display_mode/__overlay__/hubble_panel_display_modes";
+		hubble_panel_display_mode_1440x3200_120hs = "/fragment@panel_display_mode/__overlay__/hubble_panel_display_modes/hubble_panel_display_mode_1440x3200_120hs";
 		hubble_panel_display_mode_1440x3200_60ns = "/fragment@panel_display_mode/__overlay__/hubble_panel_display_modes/hubble_panel_display_mode_1440x3200_60ns";
 		hubble_panel_display_mode_1080x2400_120hs = "/fragment@panel_display_mode/__overlay__/hubble_panel_display_modes/hubble_panel_display_mode_1080x2400_120hs";
 		hubble_panel_display_mode_1080x2400_96hs = "/fragment@panel_display_mode/__overlay__/hubble_panel_display_modes/hubble_panel_display_mode_1080x2400_96hs";
