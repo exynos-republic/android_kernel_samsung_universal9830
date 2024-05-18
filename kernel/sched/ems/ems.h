@@ -403,7 +403,7 @@ static inline unsigned long ml_uclamp_task_util(struct task_struct *p)
 			uclamp_eff_value(p, UCLAMP_MAX));
 }
 #else
-static inline unsigned long ml_uclamp_task_util(struct task_strcut *p)
+static inline unsigned long ml_uclamp_task_util(struct task_struct *p)
 {
 	return ml_task_util_est(p);
 }
