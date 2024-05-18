@@ -26,8 +26,10 @@ struct sec_key_notifier_param {
 	int down;
 };
 
-extern int sec_kn_register_notifier(struct notifier_block *nb);
+int sec_kn_register_notifier(struct notifier_block *nb,
+		const unsigned int *events, const size_t nr_events);
 
-extern int sec_kn_unregister_notifier(struct notifier_block *nb);
+int sec_kn_unregister_notifier(struct notifier_block *nb,
+		const unsigned int *events, const size_t nr_events);
 
 #endif /* __SEC_KEY_NOTIFIER_H__ */

@@ -1,60 +1,39 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2020 Samsung Electronics Co., Ltd.
+ * Copyright (c) 2014-2019 Samsung Electronics Co., Ltd.
  *      http://www.samsung.com
  *
  * Samsung TN debugging code
  *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/kernel.h>
-#include <linux/module.h>
-#include <linux/moduleparam.h>
-#include <linux/platform_device.h>
 #include <linux/sec_debug.h>
-#include <soc/samsung/debug-snapshot.h>
 
 /* upload mode en/disable */
-int __read_mostly force_upload;
-module_param(force_upload, int, 0440);
-
-static int secdbg_mode_panic_handler(struct notifier_block *nb,
-				   unsigned long l, void *buf)
-{
-	if (!secdbg_mode_enter_upload()) {
-		dbg_snapshot_scratch_clear();
-		pr_info("%s: dbg_snapshot_scratch_clear done.. (force_upload: %d)\n", __func__, force_upload);
-	}
-
-	return NOTIFY_DONE;
-}
-
-static struct notifier_block nb_panic_block = {
-	.notifier_call = secdbg_mode_panic_handler,
-	.priority = INT_MAX,
-};
+static int __force_upload;
 
 int secdbg_mode_enter_upload(void)
 {
-	return force_upload;
+	return __force_upload;
 }
-EXPORT_SYMBOL(secdbg_mode_enter_upload);
 
-static int __init secdbg_mode_init(void)
+static int __init secdbg_mode_force_upload(char *str)
 {
-	pr_info("%s: force_upload is %d\n", __func__, force_upload);
+	unsigned long val = memparse(str, &str);
 
-	atomic_notifier_chain_register(&panic_notifier_list, &nb_panic_block);
-
-	return 0;
+	if (!val) {
+		pr_err("%s: disabled (%lx)\n", __func__, val);
+		__force_upload = 0;
+		/* Unlocked or Disabled */
+		return 1;
+	} else {
+		pr_err("%s: enabled (%lx)\n", __func__, val);
+		__force_upload = 1;
+		/* Locked */
+		return 1;
+	}
 }
-module_init(secdbg_mode_init);
-
-static void __exit secdbg_mode_exit(void)
-{
-	atomic_notifier_chain_unregister(&panic_notifier_list, &nb_panic_block);
-}
-module_exit(secdbg_mode_exit);
-
-MODULE_DESCRIPTION("Samsung Debug mode driver");
-MODULE_LICENSE("GPL v2");
+__setup("androidboot.force_upload=", secdbg_mode_force_upload);

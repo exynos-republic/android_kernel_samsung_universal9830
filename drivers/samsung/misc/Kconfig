@@ -9,7 +9,6 @@ config SEC_MEM
 	help
 	  Samsung TN memory inforamtion Feature, Get information from proc node.
 
-menu "Samsung NAD"
 comment "Samsung TN NAD Options"
 config SEC_NAD
 	bool "Samsung TN NAD Feature"
@@ -24,13 +23,6 @@ config SEC_NAD_MANUAL_PARAM_READTIME
 	help
 	  Samsung TN NAD Feature, set param reading time manually.
 
-config SEC_SUPPORT_SECOND_NAD
-	bool "Samsung TN 2nd NAD Feature"
-	depends on SEC_NAD
-	default n
-	help
-	  Samsung TN NAD Feature, support 2nd NAD feature.
-
 config SEC_NAD_BALANCER
 	bool "Samsung TN NAD Balancer Feature"
 	depends on SEC_NAD
@@ -39,13 +31,6 @@ config SEC_NAD_BALANCER
 	  This option enables Samsung TN NAD Balancer Feature.
 	  This option also can generate thread to change dvfs frequency. It helps keep balancing
 	  between user and factory binary.
-
-config SEC_NAD_HPM
-	bool "Samsung TN NAD HPM Feature"
-	depends on SEC_NAD
-	default n
-	help
-	  Samsung TN NAD Feature, Enable NAD HPM
 
 config SEC_NAD_API
 	bool "Samsung TN NAD API Feature"
@@ -82,13 +67,26 @@ config SEC_NAD_C
 	help
 	  Samsung TN NAD Feature, Enable NAD C
 
+config NAD_55
+	bool "Samsung TN NAD USB Feature"
+	depends on SEC_NAD
+	default n
+	help
+	  Samsung TN NAD Feature, Enable NAD USB
+
+config SEC_NAD_PMIC
+	bool "Samsung TN NAD PMIC Feature"
+	depends on SEC_NAD
+	default n
+	help
+	  Samsung TN NAD Feature, Enable NAD PMIC
+
 config SEC_NAD_BPS_CLASSIFIER
 	bool "Samsung TN NAD BPS Classifier Feature"
 	depends on SEC_NAD
 	default n
 	help
 	  This option enables gathering bps classifier information during factory process.
-endmenu
 
 config SEC_BPS_INFO
 	bool "Samsung TN BPS info Feature"
@@ -96,17 +94,29 @@ config SEC_BPS_INFO
 	help
 	  Samsung bps info feature
 
+config SEC_SUPPORT_MOTTOTEST_WITH_ACT
+	bool "Samsung TN MOTTO Test with act info Feature"
+	default n
+	help
+	  Samsung motto info feature
+
+config SEC_BPS_INFO_ADD
+	bool "Samsung TN BPS info Feature"
+	depends on SEC_BPS_INFO
+	default n
+	help
+	  Samsung bps additional info feature
+
 config SEC_HQM_DEVICE
 	bool "Samsung sec hqm device"
 	default n
 	help
 	  Samsung hqm device feature
 
-menu "Samsung Vbus Notifier drivers"
+comment "NOTIFIER configs"
 config VBUS_NOTIFIER
-	tristate "VBUS notifier support"
+	bool "VBUS notifier support"
 	default n
 	help
 	  If you say yes here you will get support for
 	  the VBUS status change notification.
-endmenu

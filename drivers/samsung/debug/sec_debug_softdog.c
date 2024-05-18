@@ -1,20 +1,27 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2020 Samsung Electronics Co., Ltd.
  *      http://www.samsung.com
  *
- * Samsung debugging code
+ * Samsung TN debugging code
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
-#include <linux/kernel.h>
-#include <linux/types.h>
 #include <linux/smp.h>
 #include <linux/sched.h>
-#include <linux/sched/debug.h>
 #include <linux/sec_debug.h>
-
+#include <linux/stacktrace.h>
+#include <linux/debug-snapshot.h>
+#include <asm/stack_pointer.h>
+#include <asm/stacktrace.h>
+#include <linux/sched/debug.h>
+#include <linux/kernel.h>
+#include <linux/types.h>
 #include "../../../kernel/sched/sched.h"
-#include "sec_debug_internal.h"
+#include <linux/sched/signal.h>
 
+static call_single_data_t csd;
 static struct task_struct *suspect;
 
 static inline char get_state(struct task_struct *p)
@@ -36,25 +43,13 @@ static inline char get_state(struct task_struct *p)
 	return state_array[idx];
 }
 
-#ifdef MODULE
-static void __show_callstack(struct task_struct *task)
-{
-	secdbg_stra_show_callstack_auto(task);
-}
-#else /* MODULE */
-static void __show_callstack(struct task_struct *task)
+static void show_callstack(void *dummy)
 {
 #ifdef CONFIG_SEC_DEBUG_AUTO_COMMENT
-	show_stack_auto_comment(task, NULL);
+	show_stack_auto_comment(NULL, NULL);
 #else
-	show_stack(task, NULL);
+	show_stack(NULL, NULL);
 #endif
-}
-#endif /* MODULE */
-
-static void show_callstack(void *info)
-{
-	__show_callstack(NULL);
 }
 
 static struct task_struct *secdbg_softdog_find_key_suspect(void)
@@ -83,7 +78,6 @@ out:
 void secdbg_softdog_show_info(void)
 {
 	struct task_struct *p = NULL;
-	static call_single_data_t csd;
 
 	p = secdbg_softdog_find_key_suspect();
 
@@ -94,16 +88,16 @@ void secdbg_softdog_show_info(void)
 		if (task_running(task_rq(p), p)) {
 			csd.flags = 0;
 			csd.func = show_callstack;
-			csd.info = NULL;
+			csd.info = 0;
 			smp_call_function_single_async(task_cpu(p), &csd);
 		} else {
-			__show_callstack(p);
+#ifdef CONFIG_SEC_DEBUG_AUTO_COMMENT
+			show_stack_auto_comment(p, NULL);
+#else
+			show_stack(p, NULL);
+#endif
 		}
 	} else {
 		pr_auto(ASL5, "[SOFTDOG] Init task not exist!\n");
 	}
 }
-EXPORT_SYMBOL_GPL(secdbg_softdog_show_info);
-
-MODULE_DESCRIPTION("Samsung Debug softdog info driver");
-MODULE_LICENSE("GPL v2");

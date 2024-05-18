@@ -1,22 +1,21 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * sec_debug_auto_comment.c
  *
  * Copyright (c) 2016 Samsung Electronics Co., Ltd
  *              http://www.samsung.com
+ *
+ *  This program is free software; you can redistribute  it and/or modify it
+ *  under  the terms of  the GNU General  Public License as published by the
+ *  Free Software Foundation;  either version 2 of the  License, or (at your
+ *  option) any later version.
+ *
  */
 
 #include <linux/kernel.h>
-#include <linux/types.h>
 #include <linux/file.h>
 #include <linux/uaccess.h>
 #include <linux/proc_fs.h>
 #include "sec_debug_internal.h"
-
-#define AC_SIZE 0xf3c
-#define AC_MAGIC 0xcafecafe
-#define AC_TAIL_MAGIC 0x00c0ffee
-#define AC_EDATA_MAGIC 0x43218765
 
 enum {
 	PRIO_LV0 = 0,
@@ -68,7 +67,7 @@ void secdbg_comm_log_disable(int type)
 
 void secdbg_comm_log_once(int type)
 {
-	if (atomic_read(&(ac_idx[type].logging_entry)))
+	if (atomic64_read(&(ac_idx[type].logging_entry)))
 		secdbg_comm_log_disable(type);
 	else
 		atomic_inc(&(ac_idx[type].logging_entry));
@@ -79,14 +78,14 @@ static void secdbg_comm_print_log(int type, const char *buf, size_t size)
 	struct sec_debug_auto_comm_buf *p = &auto_comment_info->auto_comm_buf[type];
 	unsigned int offset = p->offset;
 
-	if (atomic_read(&(ac_idx[type].logging_disable)))
+	if (atomic64_read(&(ac_idx[type].logging_disable)))
 		return;
 
 	if (offset + size > SZ_4K)
 		return;
 
 	if (init_data[type].max_count &&
-	    (atomic_read(&(ac_idx[type].logging_count)) > init_data[type].max_count))
+	    (atomic64_read(&(ac_idx[type].logging_count)) > init_data[type].max_count))
 		return;
 
 	if (!(auto_comment_info->fault_flag & (1 << type))) {
@@ -104,40 +103,16 @@ static void secdbg_comm_print_log(int type, const char *buf, size_t size)
 	p->offset += (unsigned int)size;
 }
 
-static void secdbg_comm_init_buf(void)
+static void __init secdbg_comm_init_buf(void)
 {
-	auto_comment_buf = (char *)secdbg_base_built_get_ncva(secdbg_base_built_get_buf_base(SDN_MAP_AUTO_COMMENT));
-	auto_comment_info = (struct sec_debug_auto_comment *)secdbg_base_built_get_debug_base(SDN_MAP_AUTO_COMMENT);
+	auto_comment_buf = (char *)phys_to_virt(secdbg_base_get_buf_base(SDN_MAP_AUTO_COMMENT));
+	auto_comment_info = (struct sec_debug_auto_comment *)secdbg_base_get_debug_base(SDN_MAP_AUTO_COMMENT);
 
 	memset(auto_comment_info, 0, sizeof(struct sec_debug_auto_comment));
 
 	register_set_auto_comm_buf(secdbg_comm_print_log);
 
 	pr_info("%s: done\n", __func__);
-}
-
-int secdbg_comm_auto_comment_init(void)
-{
-	int i;
-
-	pr_info("%s: start\n", __func__);
-
-	secdbg_comm_init_buf();
-
-	if (auto_comment_info) {
-		auto_comment_info->header_magic = AC_MAGIC;
-		auto_comment_info->tail_magic = AC_TAIL_MAGIC;
-	}
-
-	for (i = 0; i < SEC_DEBUG_AUTO_COMM_BUF_SIZE; i++) {
-		atomic_set(&(ac_idx[i].logging_entry), 0);
-		atomic_set(&(ac_idx[i].logging_disable), 0);
-		atomic_set(&(ac_idx[i].logging_count), 0);
-	}
-
-	pr_info("%s: done\n", __func__);
-
-	return 0;
 }
 
 static ssize_t secdbg_comm_auto_comment_proc_read(struct file *file, char __user *buf, size_t len, loff_t *offset)
@@ -198,3 +173,28 @@ static int __init secdbg_comm_auto_comment_proc_init(void)
 	return 0;
 }
 late_initcall(secdbg_comm_auto_comment_proc_init);
+
+static int __init secdbg_comm_auto_comment_init(void)
+{
+	int i;
+
+	pr_info("%s: start\n", __func__);
+
+	secdbg_comm_init_buf();
+
+	if (auto_comment_info) {
+		auto_comment_info->header_magic = AC_MAGIC;
+		auto_comment_info->tail_magic = AC_TAIL_MAGIC;
+	}
+
+	for (i = 0; i < SEC_DEBUG_AUTO_COMM_BUF_SIZE; i++) {
+		atomic_set(&(ac_idx[i].logging_entry), 0);
+		atomic_set(&(ac_idx[i].logging_disable), 0);
+		atomic_set(&(ac_idx[i].logging_count), 0);
+	}
+
+	pr_info("%s: done\n", __func__);
+
+	return 0;
+}
+early_initcall(secdbg_comm_auto_comment_init);

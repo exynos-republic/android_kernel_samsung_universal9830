@@ -1,7 +1,7 @@
 /*
- * drivers/samsung/sec_key_notifier.c
+ * drivers/debug/sec_key_notifier.c
  *
- * COPYRIGHT(C) 2016-2020 Samsung Electronics Co., Ltd. All Right Reserved.
+ * COPYRIGHT(C) 2016-2019 Samsung Electronics Co., Ltd. All Right Reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,15 +25,9 @@
 #include <linux/notifier.h>
 #include <linux/slab.h>
 
-//#include <linux/sec_debug.h>
+#include <linux/sec_debug.h>
 
 #include "sec_key_notifier.h"
-
-static unsigned int __crash_keys[] = {
-	KEY_POWER,
-	KEY_VOLUMEUP,
-	KEY_VOLUMEDOWN
-};
 
 static DEFINE_SPINLOCK(sec_kn_event_lock);
 
@@ -49,17 +43,27 @@ static void inline update_acceptable_event(unsigned int event_code, bool is_add)
 		atomic_dec(&(sec_kn_acceptable_event[event_code]));
 }
 
-int sec_kn_register_notifier(struct notifier_block *nb)
+int sec_kn_register_notifier(struct notifier_block *nb,
+		const unsigned int *events, const size_t nr_events)
 {
+	size_t i;
+
+	for (i = 0; i < nr_events; i++)
+		update_acceptable_event(events[i], true);
+
 	return atomic_notifier_chain_register(&sec_kn_notifier_list, nb);
 }
-EXPORT_SYMBOL(sec_kn_register_notifier);
 
-int sec_kn_unregister_notifier(struct notifier_block *nb)
+int sec_kn_unregister_notifier(struct notifier_block *nb,
+		const unsigned int *events, const size_t nr_events)
 {
+	size_t i;
+
+	for (i = 0; i < nr_events; i++)
+		update_acceptable_event(events[i], false);
+
 	return atomic_notifier_chain_unregister(&sec_kn_notifier_list, nb);
 }
-EXPORT_SYMBOL(sec_kn_unregister_notifier);
 
 static inline bool is_event_supported(unsigned int event_type,
 		unsigned int event_code)
@@ -154,9 +158,6 @@ static int __init sec_kn_init(void)
 	for (i = 0; i < KEY_MAX; i++)
 		atomic_set(&(sec_kn_acceptable_event[i]), 0);
 
-	for (i = 0; i < ARRAY_SIZE(__crash_keys); i++)
-		update_acceptable_event(__crash_keys[i], true);
-
 	spin_lock_init(&sec_kn_event_lock);
 
 	err = input_register_handler(&sec_kn_handler);
@@ -166,15 +167,8 @@ static int __init sec_kn_init(void)
 
 static void __exit sec_kn_exit(void)
 {
-	size_t i;
-
-	for (i = 0; i < ARRAY_SIZE(__crash_keys); i++)
-		update_acceptable_event(__crash_keys[i], false);
-
 	input_unregister_handler(&sec_kn_handler);
 }
 
 arch_initcall(sec_kn_init);
 module_exit(sec_kn_exit);
-
-MODULE_LICENSE("GPL");

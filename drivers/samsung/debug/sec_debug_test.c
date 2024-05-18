@@ -1,9 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * sec_debug_test.c
  *
  * Copyright (c) 2019 Samsung Electronics Co., Ltd
  *              http://www.samsung.com
+ *
+ *  This program is free software; you can redistribute  it and/or modify it
+ *  under  the terms of  the GNU General  Public License as published by the
+ *  Free Software Foundation;  either version 2 of the  License, or (at your
+ *  option) any later version.
+ *
  */
 
 #include <linux/kernel.h>
@@ -13,8 +18,10 @@
 #include <linux/cpu.h>
 #include <linux/io.h>
 #include <linux/slab.h>
+//#include <linux/exynos-ss.h>
 #include <asm-generic/io.h>
 #include <linux/ctype.h>
+#include <linux/pm_qos.h>
 #include <linux/sec_debug.h>
 #include <linux/kthread.h>
 #include <linux/interrupt.h>
@@ -22,16 +29,24 @@
 #include <linux/preempt.h>
 #include <linux/rwsem.h>
 #include <linux/moduleparam.h>
-#include <linux/cpumask.h>
-#include <linux/reboot.h>
 #include <asm/stackprotector.h>
+#include <linux/sched/signal.h>
 
-#include <soc/samsung/debug-snapshot.h>
-#include <soc/samsung/exynos-pmu-if.h>
-#include <soc/samsung/exynos_pm_qos.h>
+#include <soc/samsung/exynos-pmu.h>
+#include <soc/samsung/exynos-debug.h>
 #include <uapi/linux/sched/types.h>
 
-#include "sec_debug_internal.h"
+/* spin_bug somtimes disrupt getting the result really wanted */
+#ifdef CONFIG_SEC_DEBUG_SPINBUG_PANIC
+extern void spin_debug_skip_panic(void);
+#else
+static inline void spin_debug_skip_panic(void)
+{
+}
+#endif
+
+#undef MODULE_PARAM_PREFIX
+#define MODULE_PARAM_PREFIX "sec_debug."
 
 typedef void (*force_error_func)(char **argv, int argc);
 
@@ -92,8 +107,7 @@ static void simulate_EXIN_UNFZ(char **arg, int argc);
 static void simulate_WQLOCK_BUSY_WORKER(char **argv, int argc);
 static void simulate_WQLOCK_BUSY_TASK(char **argv, int argc);
 static void simulate_STACK_CORRUPTION(char **argv, int argc);
-static void simulate_POWER_OFF(char **argv, int argc);
-static void simulate_EMERGENT_REBOOT(char **argv, int argc);
+static void simulate_SIG(char **argv, int argc);
 
 enum {
 	FORCE_KERNEL_PANIC = 0,		/* KP */
@@ -153,8 +167,7 @@ enum {
 	FORCE_WQLOCK_BUSY_WORKER,	/* WORKQUEUE LOCKUP BUSY WORKER */
 	FORCE_WQLOCK_BUSY_TASK,		/* WORKQUEUE LOCKUP BUSY TASK */
 	FORCE_STACK_CORRUPTION,		/* STACK CORRUPTION */
-	FORCE_POWER_OFF,		/* POWER OFF PRE-NOTIFIER */
-	FORCE_EMERGENCY_RESTART,		/* EMERGENCY RESTART */
+	FORCE_SIG,			/* SEND SIG */
 	NR_FORCE_ERROR,
 };
 
@@ -226,8 +239,7 @@ struct force_error force_error_vector = {
 		{"wqlockup-busyworker",	&simulate_WQLOCK_BUSY_WORKER},
 		{"wqlockup-busytask",	&simulate_WQLOCK_BUSY_TASK},
 		{"stackcorrupt",	&simulate_STACK_CORRUPTION},
-		{"poweroff",	&simulate_POWER_OFF},
-		{"erst",	&simulate_EMERGENT_REBOOT},
+		{"sig",	&simulate_SIG},
 	}
 };
 
@@ -264,7 +276,7 @@ static int str_to_num(char *s)
 }
 
 /* timeout for dog bark/bite */
-#define DELAY_TIME 60000
+#define DELAY_TIME 30000
 
 #define EXYNOS_PS_HOLD_CONTROL 0x030c
 
@@ -292,23 +304,17 @@ static void simulate_DP(char **argv, int argc)
 
 	pr_crit("%s() start to hanging\n", __func__);
 	local_irq_disable();
-	mdelay(DELAY_TIME);
+	dev_mdelay(DELAY_TIME);
 	local_irq_enable();
 
 	/* should not reach here */
 }
 
-extern int s3c2410wdt_set_emergency_reset(unsigned int timeout_cnt, int index);
-
 static void simulate_QDP(char **argv, int argc)
 {
-	if (!argc) {
-		s3c2410wdt_set_emergency_reset(10, 0);
-		mdelay(DELAY_TIME);
-	} else {
-		dbg_snapshot_expire_watchdog();
-		mdelay(DELAY_TIME);
-	}
+	s3c2410wdt_set_emergency_reset(10, 0);
+
+	dev_mdelay(DELAY_TIME);
 
 	/* should not reach here */
 }
@@ -374,10 +380,7 @@ static void simulate_TP(char **argv, int argc)
 
 static void simulate_PANIC(char **argv, int argc)
 {
-	if (argv[0] == NULL)
-		panic("simulate_panic");
-	else
-		panic("%s", argv[0]);
+	panic("simulate_panic");
 }
 
 static void simulate_BUG(char **argv, int argc)
@@ -392,7 +395,9 @@ static void simulate_WARN(char **argv, int argc)
 
 static void simulate_DABRT(char **argv, int argc)
 {
-	*((volatile int *)0) = 0; /* SVACE: intended */
+#if 0
+	*((int *)0) = 0; /* SVACE: intended */
+#endif
 }
 
 static void simulate_PABRT(char **argv, int argc)
@@ -502,7 +507,7 @@ static void simulate_SOFTIRQ_LOCKUP(char **argv, int argc)
 static void softirq_storm_tasklet(unsigned long data)
 {
 	preempt_disable();
-	mdelay(500);
+	dev_mdelay(500);
 	pr_crit("%s\n", __func__);
 	preempt_enable();
 }
@@ -589,7 +594,7 @@ static int task_hard_latency(void *info)
 	while (!kthread_should_stop()) {
 		local_irq_disable();
 		pr_crit("%s [latency:%lu]\n", __func__, sec_latency);
-		mdelay(sec_latency);
+		dev_mdelay(sec_latency);
 		local_irq_enable();
 		set_current_state(TASK_INTERRUPTIBLE);
 		schedule();
@@ -609,9 +614,9 @@ static void create_and_wakeup_thread(int cpu)
 		if (IS_ERR(tsk)) {
 			pr_warn("Failed to create thread hl_test\n");
 			return;
+		} else {
+			per_cpu(sec_tsk, cpu) = tsk;
 		}
-
-		per_cpu(sec_tsk, cpu) = tsk;
 	}
 	set_cpus_allowed_ptr(tsk, cpumask_of(cpu));
 	wake_up_process(tsk);
@@ -619,16 +624,16 @@ static void create_and_wakeup_thread(int cpu)
 
 static void simulate_TASK_HARD_LATENCY(char **argv, int argc)
 {
-	int ret;
 	int cpu = 0;
 
 	if (argc) {
 		cpu = str_to_num(argv[0]);
-		if (argc >= 2)
-			ret = kstrtoul(argv[1], 10, &sec_latency);
+		if (argc >= 2) {
+			kstrtoul(argv[1], 10, &sec_latency);
+		}
 	}
 
-	if (!argc || cpu < 0 || cpu >= num_possible_cpus()) {
+	if (!argc || cpu < 0 || cpu >= NR_CPUS) {
 		pr_crit("%s() generate task to all cores [latency:%lu]\n", __func__, sec_latency);
 		for_each_online_cpu(cpu) {
 			create_and_wakeup_thread(cpu);
@@ -642,21 +647,21 @@ static void simulate_TASK_HARD_LATENCY(char **argv, int argc)
 static void simulate_IRQ_HARD_LATENCY_handler(void *info)
 {
 	pr_crit("%s latency : %lu\n", __func__, sec_latency);
-	mdelay(sec_latency);
+	dev_mdelay(sec_latency);
 }
 
 static void simulate_IRQ_HARD_LATENCY(char **argv, int argc)
 {
-	int ret;
 	int cpu = 0;
 
 	if (argc) {
 		cpu = str_to_num(argv[0]);
-		if (argc == 2)
-			ret = kstrtoul(argv[1], 10, &sec_latency);
+		if (argc == 2) {
+			kstrtoul(argv[1], 10, &sec_latency);
+		}
 	}
 
-	if (!argc || cpu < 0 || cpu >= num_possible_cpus()) {
+	if (!argc || cpu < 0 || cpu >= NR_CPUS) {
 		pr_crit("%s() generate irq to all cores[latency:%lu]\n", __func__, sec_latency);
 		for_each_online_cpu(cpu) {
 			smp_call_function_single(cpu,
@@ -669,7 +674,7 @@ static void simulate_IRQ_HARD_LATENCY(char **argv, int argc)
 	}
 }
 
-static struct exynos_pm_qos_request sec_min_pm_qos;
+static struct pm_qos_request sec_min_pm_qos;
 
 static void simulate_ALLSPIN_LOCKUP_handler(void *info)
 {
@@ -686,12 +691,12 @@ static void make_all_cpu_online(void)
 {
 	pr_crit("%s()\n", __func__);
 
-	exynos_pm_qos_add_request(&sec_min_pm_qos, PM_QOS_CPU_ONLINE_MIN,
+	pm_qos_add_request(&sec_min_pm_qos, PM_QOS_CPU_ONLINE_MIN,
 			   PM_QOS_CPU_ONLINE_MIN_DEFAULT_VALUE);
-	exynos_pm_qos_update_request(&sec_min_pm_qos,
-			      num_possible_cpus());
+	pm_qos_update_request(&sec_min_pm_qos,
+			      PM_QOS_CPU_ONLINE_MAX_DEFAULT_VALUE);
 	while (true) {
-		if (num_online_cpus() == num_possible_cpus())
+		if (num_online_cpus() == PM_QOS_CPU_ONLINE_MAX_DEFAULT_VALUE)
 			break;
 	}
 }
@@ -727,8 +732,7 @@ static void simulate_SPINLOCK_HARDLOCKUP(char **argv, int argc)
 
 static void simulate_SAFEFAULT(char **argv, int argc)
 {
-	/* TODO : spinlock is in built-in */
-	/* spin_debug_skip_panic(); */
+	spin_debug_skip_panic();
 
 	make_all_cpu_online();
 	preempt_disable();
@@ -810,21 +814,12 @@ static void simulate_UNALIGNED(char **argv, int argc)
 {
 	static u8 data[5] __aligned(4) = {1, 2, 3, 4, 5};
 	u32 *p;
-	u32 val = 0x12345678;
-	u32 written;
+	u32 val = 0x0;
 
 	p = (u32 *)(data + 1);
-	pr_info("%s: p->0x%px\n", __func__, p);
-
 	if (*p == 0)
 		val = 0x87654321;
 	*p = val;
-
-	written = *(u32 *)&data[0];
-	pr_info("%s: data[0]: 0x%08x\n", __func__, written);
-
-	if (written == (u32)((val << 8) | data[0]))
-		pr_info("This system may allow unaligned access\n");
 }
 
 static void simulate_WRITE_RO(char **argv, int argc)
@@ -833,12 +828,11 @@ static void simulate_WRITE_RO(char **argv, int argc)
 
 // Write to function addr will triger a warning by JOPP compiler
 #ifdef CONFIG_RKP_CFP_JOPP
-	/* TODO: __start_rodata is not EXPORTed */
-	/* ptr = (unsigned long *)__start_rodata; */
+	ptr = (unsigned long *)__start_rodata;
 #else
 	ptr = (unsigned long *)simulate_WRITE_RO;
 #endif
-	*ptr ^= 0x12345678;
+	*ptr ^= 0x0;
 }
 
 #define BUFFER_SIZE SZ_1K
@@ -866,7 +860,7 @@ static void simulate_OVERFLOW(char **argv, int argc)
 
 static void simulate_BAD_SCHED_handler(void *info)
 {
-	if (is_idle_task(current)) {
+	if (idle_cpu(smp_processor_id())) {
 		*(int *)info = 1;
 		msleep(1000);
 	}
@@ -882,12 +876,13 @@ static void simulate_BAD_SCHED(char **argv, int argc)
 		tries++;
 		pr_crit("%dth try.\n", tries);
 		for_each_online_cpu(cpu) {
-			smp_call_function_single(cpu,
-				simulate_BAD_SCHED_handler, &ret, 1);
+			if (idle_cpu(cpu))
+				smp_call_function_single(cpu,
+					simulate_BAD_SCHED_handler, &ret, 1);
 			if (ret)
 				return;	/* success */
 		}
-		mdelay(100);
+		dev_mdelay(100);
 	}
 }
 
@@ -955,7 +950,7 @@ static void simulate_SYNC_IRQ_LOCKUP(char **argv, int argc)
 
 	if (argc) {
 		if (!kstrtol(argv[0], 10, &irq)) {
-			struct irq_desc *desc = irq_to_desc(irq);
+			struct irq_desc *desc = irq_to_desc(i);
 
 			if (desc && desc->action && desc->action->thread_fn)
 				desc->action->thread_fn = dummy_wait_for_completion_irq_handler;
@@ -1126,7 +1121,7 @@ static void simulate_FREQ_SKEW(char **argv, int argc)
 
 	if (argc >= 2) {
 		ret = kstrtoint(argv[0], 0, &type);
-		pr_crit("%s() 1st parameter: %d (ret=%d)\n", __func__, type, ret);
+ 		pr_crit("%s() 1st parameter: %d (ret=%d)\n", __func__, type, ret);
 		if (ret == 0) {
 			ret = kstrtoul(argv[1], 0, &freq);
 			pr_crit("%s() 2nd parameter: %lu (ret=%d)\n", __func__, freq, ret);
@@ -1254,13 +1249,12 @@ static void simulate_PRINTK_FAULT(char **argv, int argc)
 
 static void simulate_EXIN_UNFZ(char **argv, int argc)
 {
-//	struct task_struct *tsk = current;
+	struct task_struct *tsk = current;
 
-	/* TODO: enable this */
-//	secdbg_exin_set_unfz(tsk->comm, tsk->pid);
-//	secdbg_exin_set_unfz(tsk->parent->comm, tsk->parent->pid);
+	secdbg_exin_set_unfz(tsk->comm, tsk->pid);
+	secdbg_exin_set_unfz(tsk->parent->comm, tsk->parent->pid);
 
-//	pr_crit("exin unfz tasks: %s\n", secdbg_exin_get_unfz());
+	pr_crit("exin unfz tasks: %s\n", secdbg_exin_get_unfz());
 }
 
 static int preempt_off;
@@ -1292,7 +1286,7 @@ static void simulate_WQLOCK_BUSY_WORKER(char **argv, int argc)
 		if (ret)
 			goto wakeup;
 
-		cpu = (cpu < 0 || cpu >= num_possible_cpus()) ? 0 : cpu;
+		cpu = (cpu < 0 || cpu >= NR_CPUS) ? 0 : cpu;
 	}
 
 wakeup:
@@ -1343,7 +1337,7 @@ static void simulate_WQLOCK_BUSY_TASK(char **argv, int argc)
 		if (ret)
 			goto wakeup;
 
-		cpu = (cpu < 0 || cpu >= num_possible_cpus()) ? 0 : cpu;
+		cpu = (cpu < 0 || cpu >= NR_CPUS) ? 0 : cpu;
 
 		if (++idx == argc)
 			goto wakeup;
@@ -1396,11 +1390,7 @@ static void secdbg_test_stack_corruption_type0(unsigned long cdata)
 	volatile unsigned long *ptarget = (unsigned long *)data_array + SZ_STACK_FP;
 
 	pr_info("%s: cdata: %016lx\n", __func__, cdata);
-#ifdef CONFIG_STACKPROTECTOR_PER_TASK
-	pr_info("%s: current->stack_canary: %016lx\n", __func__, current->stack_canary);
-#else
 	pr_info("%s: __stack_chk_guard: %016lx\n", __func__, __stack_chk_guard);
-#endif
 	pr_info("%s: original: [<0x%px>]: %016lx\n", __func__, ptarget, *ptarget);
 
 	*ptarget = cdata;
@@ -1414,11 +1404,7 @@ static void secdbg_test_stack_corruption_type1(unsigned long cdata)
 	volatile unsigned long *ptarget = (unsigned long *)data_array + SZ_STACK_SP;
 
 	pr_info("%s: cdata: %016lx\n", __func__, cdata);
-#ifdef CONFIG_STACKPROTECTOR_PER_TASK
-	pr_info("%s: current->stack_canary: %016lx\n", __func__, current->stack_canary);
-#else
 	pr_info("%s: __stack_chk_guard: %016lx\n", __func__, __stack_chk_guard);
-#endif
 	pr_info("%s: original: [<0x%px>]: %016lx\n", __func__, ptarget, *ptarget);
 
 	*ptarget = cdata;
@@ -1459,83 +1445,33 @@ static void simulate_STACK_CORRUPTION(char **argv, int argc)
 	}
 }
 
-/* for debugging power off */
-static int off_nc_registered;
-
-/* {INFORM}   {VALUE}
- * 0x00000000 00000000
- */
-static unsigned long off_debug_config_value;
-
-extern void exynos_mach_restart(const char *cmd);
-
-static int sec_debug_pre_power_off_func(struct notifier_block *nb,
-					  unsigned long l, void *buf)
+#define DEBUGGER_SIGNAL 35 //__SIGRTMIN+3
+#define KERNEL_LOG_OPT 2
+static void simulate_SIG(char **argv, int argc)
 {
-	int inf_index, inf_value;
-	unsigned int inf_type[4] = {0, 0, EXYNOS_PMU_INFORM2, EXYNOS_PMU_INFORM3};
-
-	inf_index = (off_debug_config_value >> 32) & 0xF;
-	inf_value = (off_debug_config_value) & 0xFFFFFFFF;
-
-	if ((inf_index < 2) || (3 < inf_index)) {
-		pr_crit("%s: not allowed, inform, %lx\n", __func__,
-			off_debug_config_value);
-	} else {
-		pr_crit("%s: set inform%d as %x\n", __func__,
-			inf_index, inf_value);
-
-		exynos_pmu_write(inf_type[inf_index], inf_value);
-	}
-
-	pr_crit("%s: called, do soft reset\n", __func__);
-
-	exynos_mach_restart("sw reset");
-
-	return 0;
-}
-
-static struct notifier_block nb_pre_power_off_block = {
-	.notifier_call = sec_debug_pre_power_off_func,
-	.priority = INT_MAX,
-};
-
-static void simulate_POWER_OFF(char **argv, int argc)
-{
-	int ret;
-	int enable = 0;
+	struct task_struct *p = NULL;
+	int pid, opt, ret;
 
 	if (argc) {
-		enable = str_to_num(argv[0]);
-		if (argc == 2)
-			ret = kstrtoul(argv[1], 16, &off_debug_config_value);
-	}
+		ret = kstrtoint(argv[0], 0, &pid);
+		if (ret || !pid)
+			return;
 
-	if (enable == 1) {
-		if (off_nc_registered == 0) {
-			pr_crit("%s: off nc is registered\n", __func__);
-			atomic_notifier_chain_register(&sec_power_off_notifier_list, &nb_pre_power_off_block);
-			off_nc_registered = 1;
-		} else {
-			pr_crit("%s: off nc is already registered\n", __func__);
+		p = get_pid_task(find_vpid(pid), PIDTYPE_PID);
+
+		if (argc >= 2) {
+			ret = kstrtoint(argv[1], 0, &opt);
+			if (ret)
+				goto out;
 		}
-	} else {
-		if (off_nc_registered) {
-			pr_crit("%s: off nc is un-registered\n", __func__);
-			atomic_notifier_chain_unregister(&sec_power_off_notifier_list, &nb_pre_power_off_block);
-			off_nc_registered = 0;
-		} else {
-			pr_crit("%s: off nc is NOT registered\n", __func__);
-		}
+		else
+			opt = KERNEL_LOG_OPT;
+
+		secdbg_send_sig_debuggerd(p, opt);
 	}
-}
-/* for debugging power off */
-
-static void simulate_EMERGENT_REBOOT(char **argv, int argc)
-{
-	pr_crit("%s: restart\n", __func__);
-
-	emergency_restart();
+out:
+	if (p)
+		put_task_struct(p);
 }
 
 static int sec_debug_get_force_error(char *buffer, const struct kernel_param *kp)
@@ -1558,10 +1494,15 @@ static int sec_debug_set_force_error(const char *val, const struct kernel_param 
 
 	argv = argv_split(GFP_KERNEL, val, &argc);
 
+	if (!argv) {
+		pr_info("Failed to split arguments.\n");
+		return -ENOMEM;
+	}
+
 	for (i = 0; i < NR_FORCE_ERROR; i++) {
 		if (!strcmp(argv[0], force_error_vector.item[i].errname)) {
 			pr_crit("%s() arg : %s\n", __func__, val);
-			pr_crit("%ps start\n", force_error_vector.item[i].errfunc);
+			pr_crit("%pf start\n", force_error_vector.item[i].errfunc);
 			force_error_vector.item[i].errfunc(&argv[1], argc - 1);
 			break;
 		}
@@ -1578,6 +1519,3 @@ static const struct kernel_param_ops sec_debug_force_error_ops = {
 };
 
 module_param_cb(force_error, &sec_debug_force_error_ops, NULL, 0600);
-
-MODULE_DESCRIPTION("Samsung Debug Test driver");
-MODULE_LICENSE("GPL v2");

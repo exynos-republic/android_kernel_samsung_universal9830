@@ -6,11 +6,10 @@
 #include <linux/of.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/seq_file.h>
-#include <linux/module.h>
 
 /* Override the default prefix for the compatibility with other models */
-//#undef MODULE_PARAM_PREFIX
-//#define MODULE_PARAM_PREFIX "sec_debug."
+#undef MODULE_PARAM_PREFIX
+#define MODULE_PARAM_PREFIX "sec_debug."
 
 #define ENABLE_SDCARD_RAMDUMP		(0x73646364)
 #define MAGIC_SDR_FOR_MINFORM		(0x3)
@@ -23,13 +22,10 @@
 #define SHA256_BLOCK_SIZE       64
 #define SHA256_DIGEST_LENGTH  SHA256_DIGEST_SIZE
 
-extern void sec_set_reboot_magic(int magic, int offset, int mask);
+void sec_set_reboot_magic(int magic, int offset, int mask);
 
 static unsigned int dump_sink;
-
 static unsigned int upload_count;
-module_param(upload_count, uint, 0440);
-
 static int initialized;
 
 static int sec_sdcard_ramdump(const char *val, const struct kernel_param *kp)
@@ -53,7 +49,7 @@ static const struct kernel_param_ops sec_dump_sink_ops = {
 	.get	= param_get_uint,
 };
 
-module_param_cb(dump_sink, &sec_dump_sink_ops, &dump_sink, 0644);
+module_param_cb(dump_sink, &sec_dump_sink_ops, &dump_sink, 0600);
 
 static phys_addr_t sec_rdx_bootdev_paddr;
 static unsigned int sec_rdx_bootdev_size;
@@ -62,6 +58,7 @@ static DEFINE_MUTEX(rdx_bootdev_mutex);
 static void sec_free_rdx_bootdev(phys_addr_t paddr, u64 size)
 {
 /* caution : this fuction should be called in rdx_bootdev_mutex protected region. */
+	unsigned long pfn_start, pfn_end, pfn_idx;
 	int ret;
 
 	pr_info("start (0x%llx, 0x%llx)\n", paddr, size);
@@ -94,15 +91,12 @@ static void sec_free_rdx_bootdev(phys_addr_t paddr, u64 size)
 		goto out;
 	}
 
-#if 0
 	free_memsize_reserved(paddr, size);
 
 	pfn_start = paddr >> PAGE_SHIFT;
 	pfn_end = (paddr + size) >> PAGE_SHIFT;
 	for (pfn_idx = pfn_start; pfn_idx < pfn_end; pfn_idx++)
 		free_reserved_page(pfn_to_page(pfn_idx));
-#endif
-	free_reserved_area(phys_to_virt(paddr), phys_to_virt(paddr) + size, -1, "sec_rdx_bootdev");
 
 	if (sec_rdx_bootdev_paddr == paddr) {
 		sec_rdx_bootdev_paddr = 0;
@@ -170,14 +164,12 @@ static const struct file_operations sec_rdx_bootdev_fops = {
 	.write = sec_rdx_bootdev_proc_write,
 };
 
-#if 0
 static int __init sec_set_upload_count(char *arg)
 {
 	get_option(&arg, &upload_count);
 	return 0;
 }
 early_param("sec_debug.upload_count", sec_set_upload_count);
-#endif
 
 static int sec_upload_count_show(struct seq_file *m, void *v)
 {
@@ -197,7 +189,7 @@ static const struct file_operations sec_upload_count_proc_fops = {
 	.release = single_release,
 };
 
-static int sec_map_rdx_bootdev_region(void)
+static int __init sec_map_rdx_bootdev_region(void)
 {
 	struct device_node *parent, *node;
 	int ret = 0;
@@ -247,20 +239,19 @@ static int sec_map_rdx_bootdev_region(void)
 	mutex_unlock(&rdx_bootdev_mutex);
 	return 0;
 }
+arch_initcall_sync(sec_map_rdx_bootdev_region);
 
-int sec_dump_sink_init(void)
+static int __init sec_dump_sink_init(void)
 {
 	struct proc_dir_entry *entry;
 
-	sec_map_rdx_bootdev_region();
-
-	entry = proc_create("rdx_bootdev", 0220, NULL, &sec_rdx_bootdev_fops);
+	entry = proc_create("rdx_bootdev", 0222, NULL, &sec_rdx_bootdev_fops);
 
 	if (!entry) {
 		pr_err("%s: fail to create proc entry (rdx_bootdev)\n", __func__);
 		return -ENOMEM;
 	}
-	entry = proc_create("upload_count", 0440, NULL, &sec_upload_count_proc_fops);
+	entry = proc_create("upload_count", 0444, NULL, &sec_upload_count_proc_fops);
 
 	if (!entry) {
 		pr_err("%s: fail to create proc entry (upload_count)\n", __func__);
@@ -277,3 +268,5 @@ int sec_dump_sink_init(void)
 
 	return 0;
 }
+device_initcall(sec_dump_sink_init);
+

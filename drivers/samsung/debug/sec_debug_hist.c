@@ -1,21 +1,23 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2019 Samsung Electronics Co., Ltd.
  *      http://www.samsung.com
  *
  * Samsung TN debugging code
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
-#include <linux/module.h>
+#include <linux/kernel.h>
 #include <linux/uaccess.h>
 #include <linux/proc_fs.h>
 #include "sec_debug_internal.h"
 
 static unsigned long dhist_base;
 static unsigned long dhist_size;
-static void *dhist_va_base;
 
-static ssize_t secdbg_hist_read(struct file *file, char __user *buf,
+static ssize_t secdbg_hist_hist_read(struct file *file, char __user *buf,
 				  size_t len, loff_t *offset)
 {
 	loff_t pos = *offset;
@@ -48,7 +50,7 @@ static ssize_t secdbg_hist_read(struct file *file, char __user *buf,
 
 	count = min(len, (size_t)(dhist_size - pos));
 
-	base = dhist_va_base;
+	base = (char *)phys_to_virt((phys_addr_t)dhist_base);
 	if (!base) {
 		pr_crit("%s: fail to get va (%lx)\n", __func__, dhist_base);
 
@@ -74,24 +76,24 @@ fail:
 
 static const struct file_operations dhist_file_ops = {
 	.owner = THIS_MODULE,
-	.read = secdbg_hist_read,
+	.read = secdbg_hist_hist_read,
 };
 
 static int __init secdbg_hist_late_init(void)
 {
 	struct proc_dir_entry *entry;
-	char *p;
+	char *p, *base;
 
 	dhist_base = secdbg_base_get_buf_base(SDN_MAP_DEBUG_PARAM);
-	dhist_va_base = secdbg_base_get_ncva(dhist_base);
+	base = (char *)phys_to_virt((phys_addr_t)dhist_base);
 	dhist_size = secdbg_base_get_buf_size(SDN_MAP_DEBUG_PARAM);
 
-	pr_info("%s: base: %p(%lx) size: %lx\n", __func__, dhist_va_base, dhist_base, dhist_size);
+	pr_info("%s: base: %p(%lx) size: %lx\n", __func__, base, dhist_base, dhist_size);
 
 	if (!dhist_base || !dhist_size)
 		return 0;
 
-	p = dhist_va_base;
+	p = base;
 	pr_info("%s: dummy: %x\n", __func__, *p);
 	pr_info("%s: magic: %x\n", __func__, *(unsigned int *)(p + 4));
 	pr_info("%s: version: %x\n", __func__, *(unsigned int *)(p + 8));
@@ -110,6 +112,3 @@ static int __init secdbg_hist_late_init(void)
 	return 0;
 }
 late_initcall(secdbg_hist_late_init);
-
-MODULE_DESCRIPTION("Samsung Debug history log driver");
-MODULE_LICENSE("GPL");

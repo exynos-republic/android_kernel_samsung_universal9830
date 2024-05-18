@@ -1,39 +1,33 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2014-2020 Samsung Electronics Co., Ltd.
+ * Copyright (c) 2014-2019 Samsung Electronics Co., Ltd.
  *      http://www.samsung.com
  *
  * sec_debug_wdd_info.c
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
-#include <linux/module.h>
 #include <linux/sched/clock.h>
 #include <linux/rtc.h>
 #include "sec_debug_internal.h"
 
-extern int secdbg_wdd_register_ping_notifier(struct notifier_block *nb);
-struct watchdogd_info *secdbg_base_get_wdd_info(void);
+extern struct watchdogd_info *secdbg_base_get_wdd_info(void);
 static struct watchdogd_info *wdd_info;
 static struct rtc_time wdd_info_tm;
 
-static int secdbg_wdd_ping_handler(struct notifier_block *nb,
-					   unsigned long l, void *p)
+void secdbg_wdd_set_keepalive(void)
 {
 	time64_t sec;
 
 	if (!wdd_info) {
 		pr_info("%s: wdd_info not initialized\n", __func__);
-		return NOTIFY_DONE;
+
+		return;
 	}
 
-	if (wdd_info->init_done == false) {
-		pr_info("%s: wdd_info->init_done: %s\n", __func__, wdd_info->init_done ? "true" : "false");
-		wdd_info->tsk = current;
-		wdd_info->thr = current_thread_info();
-		wdd_info->init_done = true;
-	}
-
-	pr_debug("%s: wdd_info: 0x%p\n", __func__, wdd_info);
+	printk("%s: wdd_info: 0x%p\n", __func__, wdd_info);
 	wdd_info->last_ping_cpu = raw_smp_processor_id();
 	wdd_info->last_ping_time = sched_clock();
 
@@ -44,15 +38,36 @@ static int secdbg_wdd_ping_handler(struct notifier_block *nb,
 			wdd_info->tm->tm_year + 1900, wdd_info->tm->tm_mon + 1,
 			wdd_info->tm->tm_mday, wdd_info->tm->tm_hour,
 			wdd_info->tm->tm_min, wdd_info->tm->tm_sec);
-
-	return NOTIFY_DONE;
 }
 
-static struct notifier_block secdbg_wdd_ping_block = {
-	.notifier_call = secdbg_wdd_ping_handler,
-};
+void secdbg_wdd_set_start(void)
+{
+	if (!wdd_info) {
+		pr_info("%s: wdd_info not initialized\n", __func__);
 
-static int __init secdbg_wdd_init(void)
+		return;
+	}
+
+	printk("%s: wdd_info->init_done: %s\n", __func__, wdd_info->init_done ? "true" : "false");
+	if (wdd_info->init_done == false) {
+		wdd_info->tsk = current;
+		wdd_info->thr = current_thread_info();
+		wdd_info->init_done = true;
+	}
+}
+
+void secdbg_wdd_set_emerg_addr(unsigned long addr)
+{
+	if (!wdd_info) {
+		pr_info("%s: wdd_info not initialized\n", __func__);
+
+		return;
+	}
+
+	wdd_info->emerg_addr = addr;
+}
+
+static int __init secdbg_wdd_probe(void)
 {
 	wdd_info = secdbg_base_get_wdd_info();
 	if (wdd_info) {
@@ -61,11 +76,6 @@ static int __init secdbg_wdd_init(void)
 		wdd_info->emerg_addr = 0;
 	}
 
-	secdbg_wdd_register_ping_notifier(&secdbg_wdd_ping_block);
-
 	return 0;
 }
-subsys_initcall_sync(secdbg_wdd_init);
-
-MODULE_DESCRIPTION("Samsung Debug Watchdog debug driver");
-MODULE_LICENSE("GPL v2");
+subsys_initcall(secdbg_wdd_probe);
