@@ -36,6 +36,7 @@
 
 #include "mali_kbase_jm.h"
 #include "mali_kbase_hwaccess_jm.h"
+#include "platform/exynos/gpu_dvfs_governor.h"
 
 /*
  * Private types
@@ -465,6 +466,7 @@ int kbasep_js_devdata_init(struct kbase_device * const kbdev)
 	jsdd->gpu_reset_ticks_dumping = DEFAULT_JS_RESET_TICKS_DUMPING;
 	jsdd->ctx_timeslice_ns = DEFAULT_JS_CTX_TIMESLICE_NS;
 	atomic_set(&jsdd->soft_job_timeout_ms, DEFAULT_JS_SOFT_JOB_TIMEOUT);
+	atomic_set(&jsdd->fence_timeout_ms, DEFAULT_JS_FENCE_TIMEOUT);
 
 	dev_dbg(kbdev->dev, "JS Config Attribs: ");
 	dev_dbg(kbdev->dev, "\tscheduling_period_ns:%u",
@@ -489,6 +491,8 @@ int kbasep_js_devdata_init(struct kbase_device * const kbdev)
 			jsdd->ctx_timeslice_ns);
 	dev_dbg(kbdev->dev, "\tsoft_job_timeout:%i",
 		atomic_read(&jsdd->soft_job_timeout_ms));
+	dev_dbg(kbdev->dev, "\tfence_timeout:%i",
+			atomic_read(&jsdd->fence_timeout_ms));
 
 	if (!(jsdd->soft_stop_ticks < jsdd->hard_stop_ticks_ss &&
 			jsdd->hard_stop_ticks_ss < jsdd->gpu_reset_ticks_ss &&
@@ -1162,6 +1166,12 @@ bool kbasep_js_add_job(struct kbase_context *kctx,
 
 		/* Setting atom status back to queued as it still has unresolved
 		 * dependencies */
+		/* MALI_SEC_INTEGRATION */
+#ifdef CONFIG_MALI_TSG
+		/* why this point katom status has been changed from IN JS to QUEUED ??? */
+		if (atom->status == KBASE_JD_ATOM_STATE_IN_JS)
+			gpu_tsg_set_count(atom, atom->core_req, KBASE_JD_ATOM_STATE_QUEUED, true);
+#endif
 		atom->status = KBASE_JD_ATOM_STATE_QUEUED;
 
 		/* Undo the count, as the atom will get added again later but
@@ -2494,7 +2504,11 @@ struct kbase_jd_atom *kbase_js_complete_atom(struct kbase_jd_atom *katom,
 
 	if (katom->will_fail_event_code)
 		katom->event_code = katom->will_fail_event_code;
-
+	/* MALI_SEC_INTEGRATION */
+#ifdef CONFIG_MALI_TSG
+	if (katom->status != KBASE_JD_ATOM_STATE_HW_COMPLETED)
+		gpu_tsg_set_count(katom, katom->core_req, KBASE_JD_ATOM_STATE_HW_COMPLETED, false);
+#endif
 	katom->status = KBASE_JD_ATOM_STATE_HW_COMPLETED;
 
 	if (katom->event_code != BASE_JD_EVENT_DONE) {

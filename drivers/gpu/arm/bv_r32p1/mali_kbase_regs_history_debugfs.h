@@ -70,26 +70,6 @@ void kbase_io_history_dump(struct kbase_device *kbdev);
 void kbasep_regs_history_debugfs_init(struct kbase_device *kbdev);
 
 #else /* defined(CONFIG_DEBUG_FS) && !IS_ENABLED(CONFIG_MALI_NO_MALI) */
-
-/* MALI_SEC_INTEGRATION
- * Fix compile error when DEBUG_FS is disabled
- */
-static inline int kbase_io_history_init(struct kbase_io_history *h, u16 n)
-{
-	return 0;
-}
-
-static inline void kbase_io_history_term(struct kbase_io_history *h)
-{
-	return;
-}
-
-static inline void kbase_io_history_dump(struct kbase_device *kbdev)
-{
-	return;
-}
-/* END MALI_SEC_INTEGRATION */
-
 #endif /* defined(CONFIG_DEBUG_FS) && !IS_ENABLED(CONFIG_MALI_NO_MALI) */
 
 #endif  /*_KBASE_REGS_HISTORY_DEBUGFS_H*/

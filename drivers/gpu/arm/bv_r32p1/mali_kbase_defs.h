@@ -1097,13 +1097,9 @@ struct kbase_device {
 
 	atomic_t ctx_num;
 
-//#if IS_ENABLED(CONFIG_DEBUG_FS)
-	/* MALI_SEC_INTEGRATION
-	 * Fix compile error when DEBUG_FS is disabled.
-	 * io_history is still used when DEBUG_FS is disabled.
-	 * */
+#if IS_ENABLED(CONFIG_DEBUG_FS)
 	struct kbase_io_history io_history;
-//#endif /* CONFIG_DEBUG_FS */
+#endif /* CONFIG_DEBUG_FS */
 
 	struct kbase_hwaccess_data hwaccess;
 

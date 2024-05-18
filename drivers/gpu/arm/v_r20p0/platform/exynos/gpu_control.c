@@ -29,10 +29,10 @@
 #ifdef CONFIG_EXYNOS_PD
 #include <soc/samsung/exynos-pd.h>
 #endif
-#if IS_ENABLED(CONFIG_EXYNOS_PMU_IF)
-#include <soc/samsung/exynos-pmu-if.h>
+#ifdef CONFIG_EXYNOS_PMU
+#include <soc/samsung/exynos-pmu.h>
 #endif
-#if IS_ENABLED(CONFIG_CAL_IF)
+#ifdef CONFIG_CAL_IF
 #include <soc/samsung/cal-if.h>
 #endif
 #ifdef CONFIG_OF
@@ -69,6 +69,8 @@ static struct exynos_pm_domain *gpu_get_pm_domain(char *g3d_genpd_name)
 
 	return pd;
 }
+
+static spinlock_t ifpo_lock;
 #endif /* CONFIG_MALI_RT_PM */
 
 int gpu_register_dump(void)
@@ -80,7 +82,7 @@ int gpu_is_power_on(void)
 {
 	unsigned int val = 0;
 
-#if IS_ENABLED(CONFIG_EXYNOS_PMU_IF)
+#ifdef CONFIG_EXYNOS_PMU
 	exynos_pmu_read(EXYNOS_PMU_G3D_STATUS, &val);
 #else
 	val = 0xf;
@@ -108,7 +110,7 @@ int gpu_get_cur_clock(struct exynos_context *platform)
 {
 	if (!platform)
 		return -ENODEV;
-#if IS_ENABLED(CONFIG_CAL_IF)
+#ifdef CONFIG_CAL_IF
 	return cal_dfs_get_rate(platform->g3d_cmu_cal_id);
 #else
 	return 0;
@@ -145,7 +147,7 @@ static int gpu_set_dvfs_using_calapi(struct exynos_context *platform, int clk)
 
 #ifdef CONFIG_DEBUG_SNAPSHOT
 	if (platform->gpu_dss_freq_id)
-#ifdef CONFIG_SOC_EXYNOS9820
+#ifdef CONFIG_SOC_EXYNOS9830
 		dbg_snapshot_freq_misc(platform->gpu_dss_freq_id, platform->cur_clock, clk, DSS_FLAG_IN);
 #else
 		dbg_snapshot_freq(platform->gpu_dss_freq_id, platform->cur_clock, clk, DSS_FLAG_IN);
@@ -156,7 +158,7 @@ static int gpu_set_dvfs_using_calapi(struct exynos_context *platform, int clk)
 
 #ifdef CONFIG_DEBUG_SNAPSHOT
 	if (platform->gpu_dss_freq_id)
-#ifdef CONFIG_SOC_EXYNOS9820
+#ifdef CONFIG_SOC_EXYNOS9830
 		dbg_snapshot_freq_misc(platform->gpu_dss_freq_id, platform->cur_clock, clk, DSS_FLAG_OUT);
 #else
 		dbg_snapshot_freq(platform->gpu_dss_freq_id, platform->cur_clock, clk, DSS_FLAG_OUT);
@@ -164,7 +166,9 @@ static int gpu_set_dvfs_using_calapi(struct exynos_context *platform, int clk)
 #endif
 
 	platform->cur_clock = cal_dfs_get_rate(platform->g3d_cmu_cal_id);
-
+	GPU_LOG(DVFS_DEBUG, LSI_LOAD, platform->utilization, platform->cur_clock,
+		"[id: %x] cur load: %d, cur clock: %d\n",
+		platform->g3d_cmu_cal_id, platform->utilization, platform->cur_clock);
 	GPU_LOG(DVFS_DEBUG, LSI_CLOCK_VALUE, clk, platform->cur_clock,
 		"[id: %x] clock set: %d, clock get: %d\n",
 		platform->g3d_cmu_cal_id, clk, platform->cur_clock);
@@ -177,7 +181,7 @@ err:
 	return ret;
 }
 
-int gpu_control_set_dvfs(struct kbase_device *kbdev, int clock)
+int gpu_control_set_dvfs(struct kbase_device *kbdev, int clock, bool force)
 {
 	int ret = 0;
 	bool is_up = false;
@@ -215,7 +219,10 @@ int gpu_control_set_dvfs(struct kbase_device *kbdev, int clock)
 		gpu_pm_qos_command(platform, GPU_CONTROL_PM_QOS_SET);
 #endif /* CONFIG_MALI_PM_QOS */
 
-	gpu_dvfs_update_time_in_state(prev_clock);
+	/* Exception Routine on force clock set */
+	if (!force)
+		gpu_dvfs_update_time_in_state(prev_clock);
+
 	prev_clock = clock;
 
 	return ret;
@@ -381,16 +388,13 @@ int gpu_disable_dvs(struct exynos_context *platform)
 int gpu_inter_frame_power_on(struct exynos_context *platform)
 {
 #ifdef CONFIG_MALI_RT_PM
-#if IS_ENABLED(CONFIG_CAL_IF)
 	int status;
-#endif
 
 	if (!platform->inter_frame_pm_status)
 		return 0;
 
 	mutex_lock(&platform->exynos_pm_domain->access_lock);
 
-#if IS_ENABLED(CONFIG_CAL_IF)
 	status = cal_pd_status(platform->exynos_pm_domain->cal_pdid);
 	if (status) {
 		GPU_LOG(DVFS_DEBUG, DUMMY, 0u, 0u,
@@ -399,11 +403,14 @@ int gpu_inter_frame_power_on(struct exynos_context *platform)
 		return 0;
 	}
 
+	spin_lock(&ifpo_lock); // IFPO power on sequence gaurantee.. locking
 	if (cal_pd_control(platform->exynos_pm_domain->cal_pdid, 1) != 0) {
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "%s: failed to gpu inter frame power on\n", __func__);
+		spin_unlock(&ifpo_lock);
 		mutex_unlock(&platform->exynos_pm_domain->access_lock);
 		return -1;
 	}
+	spin_unlock(&ifpo_lock); // IFPO power on sequence gaurantee.. unlocking
 
 	status = cal_pd_status(platform->exynos_pm_domain->cal_pdid);
 	if (!status) {
@@ -411,7 +418,6 @@ int gpu_inter_frame_power_on(struct exynos_context *platform)
 		mutex_unlock(&platform->exynos_pm_domain->access_lock);
 		return -1;
 	}
-#endif
 
 	mutex_unlock(&platform->exynos_pm_domain->access_lock);
 	GPU_LOG(DVFS_DEBUG, LSI_IFPM_POWER_ON, 0u, 0u, "gpu inter frame power on\n");
@@ -422,16 +428,13 @@ int gpu_inter_frame_power_on(struct exynos_context *platform)
 int gpu_inter_frame_power_off(struct exynos_context *platform)
 {
 #ifdef CONFIG_MALI_RT_PM
-#if IS_ENABLED(CONFIG_CAL_IF)
 	int status;
-#endif
 
 	if (!platform->inter_frame_pm_status)
 		return 0;
 
 	mutex_lock(&platform->exynos_pm_domain->access_lock);
 
-#if IS_ENABLED(CONFIG_CAL_IF)
 	status = cal_pd_status(platform->exynos_pm_domain->cal_pdid);
 	if (!status) {
 		GPU_LOG(DVFS_DEBUG, DUMMY, 0u, 0u,
@@ -452,14 +455,84 @@ int gpu_inter_frame_power_off(struct exynos_context *platform)
 		mutex_unlock(&platform->exynos_pm_domain->access_lock);
 		return -1;
 	}
-#endif
 
 	mutex_unlock(&platform->exynos_pm_domain->access_lock);
 	GPU_LOG(DVFS_DEBUG, LSI_IFPM_POWER_OFF, 0u, 0u, "gpu inter frame power off\n");
+#ifdef CONFIG_MALI_DYNAMIC_IFPO
+	if (platform->gpu_ifpo_get_flag == true)
+		platform->gpu_ifpo_cnt++;
+#endif
 #endif
 	return 0;
 }
 
+int gpu_power_force_on(struct exynos_context *platform)
+{
+#ifdef CONFIG_MALI_RT_PM
+	int status;
+
+	mutex_lock(&platform->exynos_pm_domain->access_lock);
+
+	status = cal_pd_status(platform->exynos_pm_domain->cal_pdid);
+	if (status) {
+		GPU_LOG(DVFS_DEBUG, DUMMY, 0u, 0u,
+				"%s: status checking : Already gpu power force on\n",__func__);
+		mutex_unlock(&platform->exynos_pm_domain->access_lock);
+		return 0;
+	}
+
+	if (cal_pd_control(platform->exynos_pm_domain->cal_pdid, 1) != 0) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "%s: failed to gpu power force on\n", __func__);
+		mutex_unlock(&platform->exynos_pm_domain->access_lock);
+		return -1;
+	}
+
+	status = cal_pd_status(platform->exynos_pm_domain->cal_pdid);
+	if (!status) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "%s: status error : gpu power force on\n", __func__);
+		mutex_unlock(&platform->exynos_pm_domain->access_lock);
+		return -1;
+	}
+
+	mutex_unlock(&platform->exynos_pm_domain->access_lock);
+	GPU_LOG(DVFS_DEBUG, LSI_FORCE_POWER_ON, 0u, 0u, "gpu power force on\n");
+#endif
+	return 0;
+}
+
+int gpu_power_force_off(struct exynos_context *platform)
+{
+#ifdef CONFIG_MALI_RT_PM
+	int status;
+
+	mutex_lock(&platform->exynos_pm_domain->access_lock);
+
+	status = cal_pd_status(platform->exynos_pm_domain->cal_pdid);
+	if (!status) {
+		GPU_LOG(DVFS_DEBUG, DUMMY, 0u, 0u,
+				"%s: status checking: Already gpu power force off\n", __func__);
+		mutex_unlock(&platform->exynos_pm_domain->access_lock);
+		return 0;
+	}
+
+	if (cal_pd_control(platform->exynos_pm_domain->cal_pdid, 0) != 0) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "%s: failed to gpu power force off\n", __func__);
+		mutex_unlock(&platform->exynos_pm_domain->access_lock);
+		return -1;
+	}
+
+	status = cal_pd_status(platform->exynos_pm_domain->cal_pdid);
+	if (status) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "%s: status error :  gpu power force off\n", __func__);
+		mutex_unlock(&platform->exynos_pm_domain->access_lock);
+		return -1;
+	}
+
+	mutex_unlock(&platform->exynos_pm_domain->access_lock);
+	GPU_LOG(DVFS_DEBUG, LSI_FORCE_POWER_OFF, 0u, 0u, "gpu power force off\n");
+#endif
+	return 0;
+}
 
 int gpu_control_enable_customization(struct kbase_device *kbdev)
 {
@@ -480,6 +553,10 @@ int gpu_control_enable_customization(struct kbase_device *kbdev)
 	else if (kbdev->pm.backend.metrics.is_full_compute_util)
 		platform->inter_frame_pm_status = false;
 #endif
+#ifdef CONFIG_MALI_DYNAMIC_IFPO
+	else if (platform->env_data.utilization >= platform->gpu_dynamic_ifpo_util && platform->cur_clock >= platform->gpu_dynamic_ifpo_freq)
+		platform->inter_frame_pm_status = false;
+#endif
 	else
 		platform->inter_frame_pm_status = true;
 
@@ -494,13 +571,11 @@ int gpu_control_enable_customization(struct kbase_device *kbdev)
 		ret = gpu_enable_dvs(platform);
 		platform->dvs_is_enabled = true;
 	} else if (platform->inter_frame_pm_status) {
-#if IS_ENABLED(CONFIG_EXYNOS_PMU_IF)
 		/* inter frame power off */
 		if (platform->gpu_set_pmu_duration_reg &&
 				platform->gpu_set_pmu_duration_val)
 			exynos_pmu_write(platform->gpu_set_pmu_duration_reg, platform->gpu_set_pmu_duration_val);
 		gpu_inter_frame_power_off(platform);
-#endif
 		platform->inter_frame_pm_is_poweron = false;
 	}
 	mutex_unlock(&platform->gpu_clock_lock);
@@ -525,10 +600,8 @@ int gpu_control_disable_customization(struct kbase_device *kbdev)
 		ret = gpu_disable_dvs(platform);
 		platform->dvs_is_enabled = false;
 	} else if (platform->inter_frame_pm_status) {
-#if IS_ENABLED(CONFIG_EXYNOS_PMU_IF)
 		/* inter frame power on */
 		gpu_inter_frame_power_on(platform);
-#endif
 		platform->inter_frame_pm_is_poweron = true;
 	}
 
@@ -606,6 +679,8 @@ int gpu_control_module_init(struct kbase_device *kbdev)
 
 #ifdef CONFIG_MALI_RT_PM
 	platform->exynos_pm_domain = gpu_get_pm_domain(platform->g3d_genpd_name);
+	if (platform->inter_frame_pm_status)
+		spin_lock_init(&ifpo_lock);
 #endif /* CONFIG_MALI_RT_PM */
 
 #ifdef CONFIG_OF

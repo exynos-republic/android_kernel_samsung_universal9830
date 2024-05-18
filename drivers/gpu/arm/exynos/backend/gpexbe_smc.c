@@ -104,12 +104,12 @@ int gpexbe_smc_protection_disable(void)
 #define SMC_DRM_G3D_POWER_ON SMC_DRM_G3D_PPCFW_RESTORE
 #endif
 
-void gpexbe_smc_notify_power_on()
+void gpexbe_smc_notify_power_on(void)
 {
 	exynos_smc(SMC_DRM_G3D_POWER_ON, 0, 0, 0);
 }
 
-void gpexbe_smc_notify_power_off()
+void gpexbe_smc_notify_power_off(void)
 {
 	exynos_smc(SMC_DRM_G3D_POWER_OFF, 0, 0, 0);
 }

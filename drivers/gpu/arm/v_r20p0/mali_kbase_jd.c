@@ -32,6 +32,7 @@
 #include <linux/ratelimit.h>
 
 #include <mali_kbase_jm.h>
+#include <mali_kbase_kinstr_jm.h>
 #include <mali_kbase_hwaccess_jm.h>
 #include <mali_kbase_tracepoints.h>
 
@@ -40,6 +41,7 @@
 /* MALI_SEC_INTEGRATION */
 #include <linux/smc.h>
 #include "platform/exynos/gpu_integration_defs.h"
+#include "platform/exynos/gpu_dvfs_governor.h"
 
 #define beenthere(kctx, f, a...)  dev_dbg(kctx->kbdev->dev, "%s:" f, __func__, ##a)
 
@@ -88,22 +90,42 @@ static int jd_run_atom(struct kbase_jd_atom *katom)
 
 	if ((katom->core_req & BASE_JD_REQ_ATOM_TYPE) == BASE_JD_REQ_DEP) {
 		/* Dependency only atom */
+		/* MALI_SEC_INTEGRATION */
+#ifdef CONFIG_MALI_TSG
+		gpu_tsg_set_count(katom, katom->core_req, KBASE_JD_ATOM_STATE_COMPLETED, false);
+#endif
 		katom->status = KBASE_JD_ATOM_STATE_COMPLETED;
+		kbase_kinstr_jm_atom_complete(katom);
 		return 0;
 	} else if (katom->core_req & BASE_JD_REQ_SOFT_JOB) {
 		/* Soft-job */
 		if (katom->will_fail_event_code) {
 			kbase_finish_soft_job(katom);
+			/* MALI_SEC_INTEGRATION */
+#ifdef CONFIG_MALI_TSG
+			gpu_tsg_set_count(katom, katom->core_req, KBASE_JD_ATOM_STATE_COMPLETED, false);
+#endif
 			katom->status = KBASE_JD_ATOM_STATE_COMPLETED;
+			kbase_kinstr_jm_atom_complete(katom);
 			return 0;
 		}
 		if (kbase_process_soft_job(katom) == 0) {
 			kbase_finish_soft_job(katom);
+			/* MALI_SEC_INTEGRATION */
+#ifdef CONFIG_MALI_TSG
+			gpu_tsg_set_count(katom, katom->core_req, KBASE_JD_ATOM_STATE_COMPLETED, false);
+#endif
 			katom->status = KBASE_JD_ATOM_STATE_COMPLETED;
+			kbase_kinstr_jm_atom_complete(katom);
 		}
 		return 0;
 	}
 
+/* MALI_SEC_INTEGRATION */
+#ifdef CONFIG_MALI_TSG
+	if (katom->status != KBASE_JD_ATOM_STATE_IN_JS)
+		gpu_tsg_set_count(katom, katom->core_req, KBASE_JD_ATOM_STATE_IN_JS, false);
+#endif
 	katom->status = KBASE_JD_ATOM_STATE_IN_JS;
 	/* Queue an action about whether we should try scheduling a context */
 	return kbasep_js_add_job(kctx, katom);
@@ -585,8 +607,12 @@ bool jd_done_nolock(struct kbase_jd_atom *katom,
 			katom->atom_flags = katom->atom_flags & (~KBASE_KATOM_FLAG_BEEN_SOFT_STOPPPED);
 		}
 	}
-
+	/* MALI_SEC_INTEGRATION */
+#ifdef CONFIG_MALI_TSG
+	gpu_tsg_set_count(katom, katom->core_req, KBASE_JD_ATOM_STATE_COMPLETED, false);
+#endif
 	katom->status = KBASE_JD_ATOM_STATE_COMPLETED;
+	kbase_kinstr_jm_atom_complete(katom);
 	list_add_tail(&katom->jd_item, &completed_jobs);
 
 	while (!list_empty(&completed_jobs)) {
@@ -622,6 +648,10 @@ bool jd_done_nolock(struct kbase_jd_atom *katom,
 					WARN_ON(!list_empty(&node->queue));
 					kbase_finish_soft_job(node);
 				}
+				/* MALI_SEC_INTEGRATION */
+#ifdef CONFIG_MALI_TSG
+				gpu_tsg_set_count(node, node->core_req, KBASE_JD_ATOM_STATE_COMPLETED, false);
+#endif
 				node->status = KBASE_JD_ATOM_STATE_COMPLETED;
 			}
 
@@ -755,6 +785,13 @@ bool jd_submit_atom(struct kbase_context *kctx, const struct base_jd_atom_v2 *us
 
 	katom->age = kctx->age_count++;
 
+	if (!(katom->core_req & BASE_JD_REQ_SOFT_JOB)) {
+		if (!kbase_js_is_atom_valid(kctx->kbdev, katom)) {
+			katom->event_code = BASE_JD_EVENT_JOB_INVALID;
+			return jd_done_nolock(katom, NULL);
+		}
+	}
+
 	INIT_LIST_HEAD(&katom->queue);
 	INIT_LIST_HEAD(&katom->jd_item);
 #ifdef CONFIG_MALI_DMA_FENCE
@@ -774,6 +811,10 @@ bool jd_submit_atom(struct kbase_context *kctx, const struct base_jd_atom_v2 *us
 			if (dep_atom_type != BASE_JD_DEP_TYPE_ORDER &&
 					dep_atom_type != BASE_JD_DEP_TYPE_DATA) {
 				katom->event_code = BASE_JD_EVENT_JOB_CONFIG_FAULT;
+				/* MALI_SEC_INTEGRATION */
+#ifdef CONFIG_MALI_TSG
+				gpu_tsg_set_count(katom, katom->core_req, KBASE_JD_ATOM_STATE_COMPLETED, false);
+#endif
 				katom->status = KBASE_JD_ATOM_STATE_COMPLETED;
 
 				/* Wrong dependency setup. Atom will be sent
@@ -790,6 +831,7 @@ bool jd_submit_atom(struct kbase_context *kctx, const struct base_jd_atom_v2 *us
 						kbdev,
 						katom,
 						TL_ATOM_STATE_IDLE);
+				kbase_kinstr_jm_atom_queue(katom);
 
 				ret = jd_done_nolock(katom, NULL);
 				goto out;
@@ -825,6 +867,11 @@ bool jd_submit_atom(struct kbase_context *kctx, const struct base_jd_atom_v2 *us
 
 			/* Atom has completed, propagate the error code if any */
 			katom->event_code = dep_atom->event_code;
+			/* MALI_SEC_INTEGRATION */
+#ifdef CONFIG_MALI_TSG
+			if (katom->status != KBASE_JD_ATOM_STATE_QUEUED)
+				gpu_tsg_set_count(katom, katom->core_req, KBASE_JD_ATOM_STATE_QUEUED, false);
+#endif
 			katom->status = KBASE_JD_ATOM_STATE_QUEUED;
 
 			/* This atom will be sent back to user space.
@@ -837,6 +884,7 @@ bool jd_submit_atom(struct kbase_context *kctx, const struct base_jd_atom_v2 *us
 			KBASE_TLSTREAM_TL_RET_ATOM_CTX(kbdev, katom, kctx);
 			KBASE_TLSTREAM_TL_ATTRIB_ATOM_STATE(kbdev, katom,
 					TL_ATOM_STATE_IDLE);
+			kbase_kinstr_jm_atom_queue(katom);
 
 			will_fail = true;
 
@@ -889,6 +937,11 @@ bool jd_submit_atom(struct kbase_context *kctx, const struct base_jd_atom_v2 *us
 		 * that depends on a previous atom with the same number behaves
 		 * as expected */
 		katom->event_code = BASE_JD_EVENT_DONE;
+/* MALI_SEC_INTEGRATION */
+#ifdef CONFIG_MALI_TSG
+		if (katom->status != KBASE_JD_ATOM_STATE_QUEUED)
+			gpu_tsg_set_count(katom, katom->core_req, KBASE_JD_ATOM_STATE_QUEUED, false);
+#endif
 		katom->status = KBASE_JD_ATOM_STATE_QUEUED;
 	}
 
@@ -906,6 +959,7 @@ bool jd_submit_atom(struct kbase_context *kctx, const struct base_jd_atom_v2 *us
 	KBASE_TLSTREAM_TL_ATTRIB_ATOM_STATE(kbdev, katom, TL_ATOM_STATE_IDLE);
 	KBASE_TLSTREAM_TL_ATTRIB_ATOM_PRIORITY(kbdev, katom, katom->sched_priority);
 	KBASE_TLSTREAM_TL_RET_ATOM_CTX(kbdev, katom, kctx);
+	kbase_kinstr_jm_atom_queue(katom);
 
 	/* Reject atoms with job chain = NULL, as these cause issues with soft-stop */
 	if (!katom->jc && (katom->core_req & BASE_JD_REQ_ATOM_TYPE) != BASE_JD_REQ_DEP) {
@@ -1008,6 +1062,11 @@ bool jd_submit_atom(struct kbase_context *kctx, const struct base_jd_atom_v2 *us
 
 		ret = false;
 	} else if ((katom->core_req & BASE_JD_REQ_ATOM_TYPE) != BASE_JD_REQ_DEP) {
+		/* MALI_SEC_INTEGRATION */
+#ifdef CONFIG_MALI_TSG
+		if (katom->status == KBASE_JD_ATOM_STATE_QUEUED)
+			gpu_tsg_set_count(katom, katom->core_req, KBASE_JD_ATOM_STATE_IN_JS, false);
+#endif
 		katom->status = KBASE_JD_ATOM_STATE_IN_JS;
 		ret = kbasep_js_add_job(kctx, katom);
 		/* If job was cancelled then resolve immediately */
@@ -1132,6 +1191,10 @@ while (false)
 
 KBASE_EXPORT_TEST_API(kbase_jd_submit);
 
+#if defined(CONFIG_SEC_ABC)
+#include <linux/sti/abc_common.h>
+#endif
+
 void kbase_jd_done_worker(struct work_struct *data)
 {
 	struct kbase_jd_atom *katom = container_of(data, struct kbase_jd_atom, work);
@@ -1180,7 +1243,11 @@ void kbase_jd_done_worker(struct work_struct *data)
 		mutex_unlock(&js_devdata->queue_mutex);
 
 		spin_lock_irqsave(&kbdev->hwaccess_lock, flags);
-
+		/* MALI_SEC_INTEGRATION */
+#ifdef CONFIG_MALI_TSG
+		if (katom->status != KBASE_JD_ATOM_STATE_IN_JS)
+			gpu_tsg_set_count(katom, katom->core_req, KBASE_JD_ATOM_STATE_IN_JS, false);
+#endif
 		katom->status = KBASE_JD_ATOM_STATE_IN_JS;
 		kbase_js_unpull(kctx, katom);
 
@@ -1191,11 +1258,15 @@ void kbase_jd_done_worker(struct work_struct *data)
 	}
 
 	if ((katom->event_code != BASE_JD_EVENT_DONE) &&
-			(!kbase_ctx_flag(katom->kctx, KCTX_DYING)))
+			(!kbase_ctx_flag(katom->kctx, KCTX_DYING))) {
 		dev_err(kbdev->dev,
 			"t6xx: GPU fault 0x%02lx from job slot %d\n",
 					(unsigned long)katom->event_code,
 								katom->slot_nr);
+#if defined(CONFIG_SEC_ABC)
+		sec_abc_send_event("MODULE=gpu@ERROR=gpu_fault");
+#endif
+	}
 
 	if (kbase_hw_has_issue(kbdev, BASE_HW_ISSUE_8316))
 		kbase_as_poking_timer_release_atom(kbdev, kctx, katom);
@@ -1399,7 +1470,7 @@ void kbase_jd_done(struct kbase_jd_atom *katom, int slot_nr,
 
 	atomic_inc(&kctx->work_count);
 
-#if IS_ENABLED(CONFIG_DEBUG_FS)
+#ifdef CONFIG_DEBUG_FS
 	/* a failed job happened and is waiting for dumping*/
 	if (!katom->will_fail_event_code &&
 			kbase_debug_job_fault_process(katom, katom->event_code))
@@ -1477,7 +1548,7 @@ void kbase_jd_zap_context(struct kbase_context *kctx)
 	flush_workqueue(kctx->dma_fence.wq);
 #endif
 
-#if IS_ENABLED(CONFIG_DEBUG_FS)
+#ifdef CONFIG_DEBUG_FS
 	kbase_debug_job_fault_kctx_unblock(kctx);
 #endif
 

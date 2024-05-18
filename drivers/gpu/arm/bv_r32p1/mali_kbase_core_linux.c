@@ -4141,6 +4141,7 @@ static void kbasep_protected_mode_hwcnt_disable_worker(struct work_struct *data)
 	spin_unlock_irqrestore(backend_lock, flags);
 }
 
+#ifndef PLATFORM_PROTECTED_CALLBACKS
 static int kbasep_protected_mode_enable(struct protected_mode_device *pdev)
 {
 	struct kbase_device *kbdev = pdev->data;
@@ -4160,10 +4161,6 @@ static const struct protected_mode_ops kbasep_native_protected_ops = {
 	.protected_mode_disable = kbasep_protected_mode_disable
 };
 
-/* MALI_SEC_INTEGRATION
- * Move the location of ifndef PLATFORM_PROTECTED_CALLBACKS
- */
-#ifndef PLATFORM_PROTECTED_CALLBACKS
 #define PLATFORM_PROTECTED_CALLBACKS (&kbasep_native_protected_ops)
 #endif /* PLATFORM_PROTECTED_CALLBACKS */
 
@@ -4175,10 +4172,6 @@ int kbase_protected_mode_init(struct kbase_device *kbdev)
 	if (!kbdev->protected_dev)
 		return -ENOMEM;
 	kbdev->protected_dev->data = kbdev;
-	/* MALI_SEC_INTEGRATION
-	 * Store ARM default protected mode function pointers in vendor accessible location
-	 * */
-	kbdev->protected_dev->ops = kbasep_native_protected_ops;
 	kbdev->protected_ops = PLATFORM_PROTECTED_CALLBACKS;
 	INIT_WORK(&kbdev->protected_mode_hwcnt_disable_work,
 		kbasep_protected_mode_hwcnt_disable_worker);

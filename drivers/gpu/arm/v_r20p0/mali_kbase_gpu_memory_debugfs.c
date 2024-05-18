@@ -24,7 +24,7 @@
 /* MALI_SEC_INTEGRATION */
 #include <gpu_integration_defs.h>
 
-#if IS_ENABLED(CONFIG_DEBUG_FS)
+#ifdef CONFIG_DEBUG_FS
 /** Show callback for the @c gpu_memory debugfs file.
  *
  * This function is called to get the contents of the @c gpu_memory debugfs
@@ -56,10 +56,13 @@ static int kbasep_gpu_memory_seq_show(struct seq_file *sfile, void *data)
 		list_for_each_entry(kctx, &kbdev->kctx_list, kctx_list_link) {
 			/* output the memory usage and cap for each kctx
 			* opened on this device */
-			seq_printf(sfile, "  %s-0x%p %10u\n",
+			seq_printf(sfile, "  %s-0x%p %10u | tgid=%10d | pid=%10d  | name=%20s\n",
 				"kctx",
 				kctx,
-				atomic_read(&(kctx->used_pages)));
+				atomic_read(&(kctx->used_pages)),
+				kctx->tgid,
+				kctx->pid,
+				kctx->name);
 		}
 		mutex_unlock(&kbdev->kctx_list_lock);
 	}

@@ -24,7 +24,7 @@
 #include <linux/spinlock.h>
 #include <mali_kbase_hwaccess_jm.h>
 
-#if IS_ENABLED(CONFIG_DEBUG_FS)
+#ifdef CONFIG_DEBUG_FS
 
 static bool kbase_is_job_fault_event_pending(struct kbase_device *kbdev)
 {
