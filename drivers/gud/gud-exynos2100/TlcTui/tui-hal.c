@@ -50,7 +50,7 @@ struct sg_table *g_sgt;
 
 #ifdef CONFIG_TRUSTED_UI_TOUCH_ENABLE
 static int tsp_irq_num = ;
-#if defined(CONFIG_TOUCHSCREEN_SEC_TS)
+#if defined(CONFIG_TOUCHSCREEN_SEC_TS_Y79A)
 static void tui_delay(unsigned int ms)
 {
 	if (ms < 20)

@@ -79,14 +79,14 @@ static ssize_t sec_ts_reg_store(struct device *dev, struct device_attribute *att
 	struct sec_ts_data *ts = dev_get_drvdata(dev);
 
 	if (ts->power_status == SEC_TS_STATE_POWER_OFF) {
-		dev_info(&ts->client->dev, "%s: Power off state\n", __func__);
+		input_info(true, &ts->client->dev, "%s: Power off state\n", __func__);
 		return -EIO;
 	}
 
 	if (size > 0)
 		ts->sec_ts_i2c_write_burst(ts, (u8 *)buf, size);
 
-	dev_info(&ts->client->dev, "%s: 0x%x, 0x%x, size %d\n", __func__, buf[0], buf[1], (int)size);
+	input_info(true, &ts->client->dev, "%s: 0x%x, 0x%x, size %d\n", __func__, buf[0], buf[1], (int)size);
 	return size;
 }
 
@@ -99,13 +99,20 @@ static ssize_t sec_ts_regread_show(struct device *dev, struct device_attribute *
 	int offset;
 
 	if (ts->power_status == SEC_TS_STATE_POWER_OFF) {
-		dev_err(&ts->client->dev, "%s: Power off state\n", __func__);
+		input_err(true, &ts->client->dev, "%s: Power off state\n", __func__);
 		return -EIO;
 	}
 
 	disable_irq(ts->client->irq);
 
 	mutex_lock(&ts->device_mutex);
+
+	if ((lv1_readsize <= 0) || (lv1_readsize > PAGE_SIZE)) {
+		input_err(true, &ts->client->dev, "%s: invalid lv1_readsize = %d\n",
+						__func__, lv1_readsize);
+		lv1_readsize = 0;
+		goto malloc_err;
+	}
 
 	read_lv1_buff = kzalloc(lv1_readsize, GFP_KERNEL);
 	if (!read_lv1_buff)
@@ -125,7 +132,7 @@ static ssize_t sec_ts_regread_show(struct device *dev, struct device_attribute *
 			ret = ts->sec_ts_i2c_read_bulk (ts, &read_lv1_buff[offset], length);
 
 		if (ret < 0) {
-			dev_err(&ts->client->dev, "%s: i2c read %x command, remain =%d\n", __func__, lv1cmd, remain);
+			input_err(true, &ts->client->dev, "%s: i2c read %x command, remain =%d\n", __func__, lv1cmd, remain);
 			goto i2c_err;
 		}
 
@@ -133,7 +140,7 @@ static ssize_t sec_ts_regread_show(struct device *dev, struct device_attribute *
 		offset += length;
 	} while (remain > 0);
 
-	dev_info(&ts->client->dev, "%s: lv1_readsize = %d\n", __func__, lv1_readsize);
+	input_info(true, &ts->client->dev, "%s: lv1_readsize = %d\n", __func__, lv1_readsize);
 	memcpy(buf, read_lv1_buff + lv1_readoffset, lv1_readsize);
 
 i2c_err:
@@ -152,7 +159,7 @@ static ssize_t sec_ts_gesture_status_show(struct device *dev, struct device_attr
 
 	mutex_lock(&ts->device_mutex);
 	memcpy(buf, ts->gesture_status, sizeof(ts->gesture_status));
-	dev_info(&ts->client->dev,
+	input_info(true, &ts->client->dev,
 				"%s: GESTURE STATUS %x %x %x %x %x %x\n", __func__,
 				ts->gesture_status[0], ts->gesture_status[1], ts->gesture_status[2],
 				ts->gesture_status[3], ts->gesture_status[4], ts->gesture_status[5]);
@@ -187,7 +194,7 @@ static ssize_t sec_ts_enter_recovery_store(struct device *dev, struct device_att
 
 	ret = kstrtoul(buf, 10, &on);
 	if (ret != 0) {
-		dev_err(&ts->client->dev, "%s: failed to read:%d\n",
+		input_err(true, &ts->client->dev, "%s: failed to read:%d\n",
 					__func__, ret);
 		return -EINVAL;
 	}
@@ -196,14 +203,14 @@ static ssize_t sec_ts_enter_recovery_store(struct device *dev, struct device_att
 		disable_irq(ts->client->irq);
 		gpio_free(pdata->irq_gpio);
 
-		dev_info(&ts->client->dev, "%s: gpio free\n", __func__);
+		input_info(true, &ts->client->dev, "%s: gpio free\n", __func__);
 		if (gpio_is_valid(pdata->irq_gpio)) {
 			ret = gpio_request_one(pdata->irq_gpio, GPIOF_OUT_INIT_LOW, "sec,tsp_int");
-			dev_info(&ts->client->dev, "%s: gpio request one\n", __func__);
+			input_info(true, &ts->client->dev, "%s: gpio request one\n", __func__);
 			if (ret < 0)
-				dev_err(&ts->client->dev, "%s: Unable to request tsp_int [%d]: %d\n", __func__, pdata->irq_gpio, ret);
+				input_err(true, &ts->client->dev, "%s: Unable to request tsp_int [%d]: %d\n", __func__, pdata->irq_gpio, ret);
 		} else {
-			dev_err(&ts->client->dev, "%s: Failed to get irq gpio\n", __func__);
+			input_err(true, &ts->client->dev, "%s: Failed to get irq gpio\n", __func__);
 			return -EINVAL;
 		}
 
@@ -216,11 +223,11 @@ static ssize_t sec_ts_enter_recovery_store(struct device *dev, struct device_att
 		if (gpio_is_valid(pdata->irq_gpio)) {
 			ret = gpio_request_one(pdata->irq_gpio, GPIOF_DIR_IN, "sec,tsp_int");
 			if (ret) {
-				dev_err(&ts->client->dev, "%s: Unable to request tsp_int [%d]\n", __func__, pdata->irq_gpio);
+				input_err(true, &ts->client->dev, "%s: Unable to request tsp_int [%d]\n", __func__, pdata->irq_gpio);
 				return -EINVAL;
 			}
 		} else {
-			dev_err(&ts->client->dev, "%s: Failed to get irq gpio\n", __func__);
+			input_err(true, &ts->client->dev, "%s: Failed to get irq gpio\n", __func__);
 			return -EINVAL;
 		}
 
@@ -232,7 +239,7 @@ static ssize_t sec_ts_enter_recovery_store(struct device *dev, struct device_att
 		/* AFE Calibration */
 		ret = ts->sec_ts_i2c_write(ts, SEC_TS_CMD_CALIBRATION_AMBIENT, NULL, 0);
 		if (ret < 0)
-			dev_err(&ts->client->dev, "%s: fail to write AFE_CAL\n", __func__);
+			input_err(true, &ts->client->dev, "%s: fail to write AFE_CAL\n", __func__);
 
 		sec_ts_delay(1000);
 		enable_irq(ts->client->irq);
@@ -248,7 +255,7 @@ static inline ssize_t sec_ts_show_error(struct device *dev,
 {
 	struct sec_ts_data *ts = dev_get_drvdata(dev);
 
-	dev_err(&ts->client->dev, "%s: read only function, %s\n", __func__, attr->attr.name);
+	input_err(true, &ts->client->dev, "%s: read only function, %s\n", __func__, attr->attr.name);
 	return -EPERM;
 }
 
@@ -257,7 +264,7 @@ static inline ssize_t sec_ts_store_error(struct device *dev,
 {
 	struct sec_ts_data *ts = dev_get_drvdata(dev);
 
-	dev_err(&ts->client->dev, "%s: write only function, %s\n", __func__, attr->attr.name);
+	input_err(true, &ts->client->dev, "%s: write only function, %s\n", __func__, attr->attr.name);
 	return -EPERM;
 }
 
@@ -267,23 +274,25 @@ int sec_ts_raw_device_init(struct sec_ts_data *ts)
 
 #ifdef CONFIG_SEC_SYSFS
 	ts->dev = sec_device_create(ts, "sec_ts");
+#elif defined(CONFIG_DRV_SAMSUNG)
+	ts->dev = sec_device_create(ts, "sec_ts");
 #else
-	ts->dev = device_create(sec_class, NULL, 0, ts, "sec_ts");
+	ts->dev = device_create(sec_class, NULL, 9, ts, "sec_ts");
 #endif
 	ret = IS_ERR(ts->dev);
 	if (ret) {
-		dev_err(&ts->client->dev, "%s: fail - device_create\n", __func__);
+		input_err(true, &ts->client->dev, "%s: fail - device_create\n", __func__);
 		return ret;
 	}
 
 	ret = sysfs_create_group(&ts->dev->kobj, &cmd_attr_group);
 	if (ret < 0) {
-		dev_err(&ts->client->dev, "%s: fail - sysfs_create_group\n", __func__);
+		input_err(true, &ts->client->dev, "%s: fail - sysfs_create_group\n", __func__);
 		goto err_sysfs;
 	}
 
 	return ret;
 err_sysfs:
-	dev_err(&ts->client->dev, "%s: fail\n", __func__);
+	input_err(true, &ts->client->dev, "%s: fail\n", __func__);
 	return ret;
 }
