@@ -28,4 +28,75 @@
 #define EXYNOS_PMU_INFORM3 0x080C
 #define EXYNOS_PMU_PS_HOLD_CONTROL 0x030C
 
+/*
+ * Bootstat @ /proc/boot_stat
+ */
+#ifdef CONFIG_SEC_BOOTSTAT
+extern void sec_bootstat_mct_start(u64 t);
+extern void sec_bootstat_add(const char *c);
+extern void sec_bootstat_add_initcall(const char *name);
+
+extern void sec_bootstat_get_cpuinfo(int *freq, int *online);
+extern void sec_bootstat_get_thermal(int *temp);
+
+#define DEVICE_INIT_TIME_100MS 100000
+extern struct list_head device_init_time_list;
+
+struct device_init_time_entry {
+	struct list_head next;
+	char *buf;
+	unsigned long long duration;
+};
+#else
+#define sec_bootstat_mct_start(a)		do { } while (0)
+#define sec_bootstat_add(a)			do { } while (0)
+#define sec_bootstat_add_initcall(a)		do { } while (0)
+
+#define sec_bootstat_get_cpuinfo(a, b)		do { } while (0)
+#define sec_bootstat_get_thermal(a)		do { } while (0)
+#endif /* CONFIG_SEC_BOOT_STAT */
+
+/*
+ * Initcall log @ /proc/initcall_debug
+ * show a sorted execution time list of initcalls.
+ */
+#ifdef CONFIG_SEC_INITCALL_DEBUG
+#define SEC_INITCALL_DEBUG_MIN_TIME		10000
+extern void sec_initcall_debug_add(initcall_t fn, unsigned long long t);
+#else
+#define sec_initcall_debug_add(a, b)		do { } while (0)
+#endif /* CONFIG_SEC_INITCALL_DEBUG */
+
+/*
+ * Param op.
+ */
+#ifdef CONFIG_SEC_PARAM
+#define CM_OFFSET				CONFIG_CM_OFFSET
+#define CM_OFFSET_LIMIT			CM_OFFSET + 4
+#define WC_OFFSET				CONFIG_WC_OFFSET
+#define WC_OFFSET_LIMIT			WC_OFFSET
+#define PD_OFFSET				CONFIG_PD_OFFSET
+#define PD_OFFSET_LIMIT			PD_OFFSET + 4
+#define FMM_LOCK_OFFSET			CONFIG_FMM_LOCK_OFFSET
+
+enum {
+	PARAM_OFF = '0',
+	PARAM_ON = '1',
+};
+
+extern int sec_set_param(unsigned long offset, char val);
+extern int sec_set_param_u32(unsigned long offset, u32 val);
+extern int sec_set_param_str(unsigned long offset, const char *val, int size);
+extern int sec_set_param_extra(unsigned long offset, void *extra, size_t size);
+extern int sec_get_param_u32(unsigned long offset, u32 *val);
+extern int sec_get_param_str(unsigned long offset, char *val);
+#else
+#define sec_set_param(a, b)			(-1)
+#define sec_set_param_u32(a, b)			(-1)
+#define sec_set_param_str(a, b, c)		(-1)
+#define sec_set_param_extra(a, b, c)		(-1)
+#define sec_get_param_u32(a, b)			(-1)
+#define sec_get_param_str(a, b)			(-1)
+#endif /* CONFIG_SEC_PARAM */
+
 #endif /* CONFIG_SEC_EXT */
