@@ -16,11 +16,8 @@
 
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <linux/pm_qos.h>
 #include <linux/sec_pm_cpufreq.h>
-#include <soc/samsung/freq-qos-tracer.h>
 
-static DEFINE_MUTEX(cpufreq_list_lock);
 static LIST_HEAD(sec_pm_cpufreq_list);
 
 static unsigned long throttle_count;
@@ -28,20 +25,24 @@ static unsigned long throttle_count;
 static int sec_pm_cpufreq_set_max_freq(struct sec_pm_cpufreq_dev *cpufreq_dev,
 				 unsigned int level)
 {
+	unsigned int max_freq;
+
 	if (WARN_ON(level > cpufreq_dev->max_level))
 		return -EINVAL;
 
 	if (cpufreq_dev->cur_level == level)
 		return 0;
 
-	cpufreq_dev->max_freq = cpufreq_dev->freq_table[level].frequency;
+	max_freq = cpufreq_dev->freq_table[level].frequency;
 	cpufreq_dev->cur_level = level;
+	cpufreq_dev->max_freq = max_freq;
 
 	pr_info("%s: throttle cpu%d : %u KHz\n", __func__,
-			cpufreq_dev->policy->cpu, cpufreq_dev->max_freq);
+			cpufreq_dev->policy->cpu, max_freq);
 
-	return freq_qos_update_request(&cpufreq_dev->qos_req,
-				cpufreq_dev->freq_table[level].frequency);
+	cpufreq_update_policy(cpufreq_dev->policy->cpu);
+
+	return 0;
 }
 
 static unsigned long get_level(struct sec_pm_cpufreq_dev *cpufreq_dev,
@@ -101,10 +102,43 @@ void sec_pm_cpufreq_unthrottle(void)
 
 	throttle_count = 0;
 
-	list_for_each_entry(cpufreq_dev, &sec_pm_cpufreq_list, node)
+	list_for_each_entry(cpufreq_dev, &sec_pm_cpufreq_list, node) {
 		sec_pm_cpufreq_set_max_freq(cpufreq_dev, 0);
+	}
 }
 EXPORT_SYMBOL_GPL(sec_pm_cpufreq_unthrottle);
+
+static int sec_pm_cpufreq_notifier(struct notifier_block *nb,
+				    unsigned long event, void *data)
+{
+	struct cpufreq_policy *policy = data;
+	unsigned long max_freq;
+	struct sec_pm_cpufreq_dev *cpufreq_dev;
+
+	if (event != CPUFREQ_ADJUST)
+		return NOTIFY_DONE;
+
+	list_for_each_entry(cpufreq_dev, &sec_pm_cpufreq_list, node) {
+		/*
+		 * A new copy of the policy is sent to the notifier and can't
+		 * compare that directly.
+		 */
+		if (policy->cpu != cpufreq_dev->policy->cpu)
+			continue;
+
+		max_freq = cpufreq_dev->max_freq;
+
+		if (policy->max > max_freq)
+			cpufreq_verify_within_limits(policy, 0, max_freq);
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block sec_pm_cpufreq_notifier_block = {
+	.notifier_call = sec_pm_cpufreq_notifier,
+};
 
 static unsigned int find_next_max(struct cpufreq_frequency_table *table,
 				  unsigned int prev_max)
@@ -124,11 +158,12 @@ static struct sec_pm_cpufreq_dev *
 __sec_pm_cpufreq_register(struct cpufreq_policy *policy)
 {
 	struct sec_pm_cpufreq_dev *cpufreq_dev;
-	int ret;
+	void *ret;
 	unsigned int freq, i;
+	bool first;
 
 	if (IS_ERR_OR_NULL(policy)) {
-		pr_err("%s: cpufreq policy isn't valid: %pK\n", __func__, policy);
+		pr_err("%s: cpufreq policy isn't valid: %p\n", __func__, policy);
 		return ERR_PTR(-EINVAL);
 	}
 
@@ -144,6 +179,7 @@ __sec_pm_cpufreq_register(struct cpufreq_policy *policy)
 		return ERR_PTR(-ENOMEM);
 
 	cpufreq_dev->policy = policy;
+
 	cpufreq_dev->max_level = i - 1;
 
 	cpufreq_dev->freq_table = kmalloc_array(i,
@@ -151,7 +187,7 @@ __sec_pm_cpufreq_register(struct cpufreq_policy *policy)
 					GFP_KERNEL);
 	if (!cpufreq_dev->freq_table) {
 		pr_err("%s: fail to allocate freq_table\n", __func__);
-		ret = -ENOMEM;
+		ret = ERR_PTR(-ENOMEM);
 		goto free_cpufreq_dev;
 	}
 
@@ -169,27 +205,20 @@ __sec_pm_cpufreq_register(struct cpufreq_policy *policy)
 
 	cpufreq_dev->max_freq = cpufreq_dev->freq_table[0].frequency;
 
-	ret = freq_qos_tracer_add_request(&policy->constraints,
-				   &cpufreq_dev->qos_req, FREQ_QOS_MAX,
-				   cpufreq_dev->freq_table[0].frequency);
-	if (ret < 0) {
-		pr_err("%s: Failed to add freq constraint (%d)\n", __func__,
-		       ret);
-		goto free_table;
-	}
-
-	mutex_lock(&cpufreq_list_lock);
+	/* Register the notifier for first cpufreq device */
+	first = list_empty(&sec_pm_cpufreq_list);
 	list_add(&cpufreq_dev->node, &sec_pm_cpufreq_list);
-	mutex_unlock(&cpufreq_list_lock);
+
+	if (first)
+		cpufreq_register_notifier(&sec_pm_cpufreq_notifier_block,
+					  CPUFREQ_POLICY_NOTIFIER);
 
 	return cpufreq_dev;
 
-free_table:
-	kfree(cpufreq_dev->freq_table);
 free_cpufreq_dev:
 	kfree(cpufreq_dev);
 
-	return ERR_PTR(ret);
+	return ret;
 }
 
 struct sec_pm_cpufreq_dev *
@@ -203,16 +232,20 @@ EXPORT_SYMBOL_GPL(sec_pm_cpufreq_register);
 
 void sec_pm_cpufreq_unregister(struct sec_pm_cpufreq_dev *cpufreq_dev)
 {
+	bool last;
+
 	pr_info("%s\n", __func__);
 
 	if (!cpufreq_dev)
 		return;
 
-	mutex_lock(&cpufreq_list_lock);
 	list_del(&cpufreq_dev->node);
-	mutex_unlock(&cpufreq_list_lock);
+	/* Unregister the notifier for the last cpufreq device */
+	last = list_empty(&sec_pm_cpufreq_list);
 
-	freq_qos_tracer_remove_request(&cpufreq_dev->qos_req);
+	if (last)
+		cpufreq_unregister_notifier(&sec_pm_cpufreq_notifier_block,
+					    CPUFREQ_POLICY_NOTIFIER);
 
 	kfree(cpufreq_dev->freq_table);
 	kfree(cpufreq_dev);

@@ -1,193 +1,257 @@
-/*
- * sec_pm_debug.c
+/* drivers/samsung/pm/sec_pm_cpufreq.c
  *
- *  Copyright (c) 2017 Samsung Electronics Co., Ltd.
- *      http://www.samsung.com
- *  Minsung Kim <ms925.kim@samsung.com>
+ * Copyright (c) 2020 Samsung Electronics Co., Ltd.
+ * Author: Minsung Kim <ms925.kim@samsung.com>
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * This software is licensed under the terms of the GNU General Public
+ * License version 2, as published by the Free Software Foundation, and
+ * may be copied, distributed, and modified under those terms.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
  */
 
 #include <linux/module.h>
-#include <linux/platform_device.h>
-#include <linux/of.h>
-#include <linux/sec_class.h>
-#include <linux/sec_pm_debug.h>
-#include <linux/suspend.h>
+#include <linux/slab.h>
+#include <linux/sec_pm_cpufreq.h>
 
-struct sec_pm_debug_info {
-	struct device		*dev;
-	struct device		*sec_pm_dev;
-};
+static LIST_HEAD(sec_pm_cpufreq_list);
 
-static unsigned int sleep_count;
-static struct timespec64 total_sleep_time;
-static ktime_t last_monotime; /* monotonic time before last suspend */
-static ktime_t curr_monotime; /* monotonic time after last suspend */
-static ktime_t last_stime; /* monotonic boottime offset before last suspend */
-static ktime_t curr_stime; /* monotonic boottime offset after last suspend */
+static unsigned long throttle_count;
 
-static ssize_t sleep_time_sec_show(struct device *dev,
-				struct device_attribute *attr, char *buf)
+static int sec_pm_cpufreq_set_max_freq(struct sec_pm_cpufreq_dev *cpufreq_dev,
+				 unsigned int level)
 {
-	return sprintf(buf, "%lld\n", total_sleep_time.tv_sec);
-}
+	unsigned int max_freq;
 
-static ssize_t sleep_count_show(struct device *dev,
-				struct device_attribute *attr, char *buf)
-{
-	return sprintf(buf, "%u\n", sleep_count);
-}
+	if (WARN_ON(level > cpufreq_dev->max_level))
+		return -EINVAL;
 
-static ssize_t pwr_on_off_src_show(struct device *dev,
-				struct device_attribute *attr, char *buf)
-{
-	u8 pmic_onsrc = 0;
-	u8 pmic_offsrc[2] = {0,};
+	if (cpufreq_dev->cur_level == level)
+		return 0;
 
-	pmic_get_onsrc(&pmic_onsrc, 1);
-	pmic_get_offsrc(pmic_offsrc, 2);
+	max_freq = cpufreq_dev->freq_table[level].frequency;
+	cpufreq_dev->cur_level = level;
+	cpufreq_dev->max_freq = max_freq;
 
-	return sprintf(buf, "ONSRC:0x%02X OFFSRC:0x%02X,0x%02X\n", pmic_onsrc,
-			pmic_offsrc[0], pmic_offsrc[1]);
-}
+	pr_info("%s: throttle cpu%d : %u KHz\n", __func__,
+			cpufreq_dev->policy->cpu, max_freq);
 
-static DEVICE_ATTR_RO(sleep_time_sec);
-static DEVICE_ATTR_RO(sleep_count);
-static DEVICE_ATTR_RO(pwr_on_off_src);
-
-static struct attribute *sec_pm_debug_attrs[] = {
-	&dev_attr_sleep_time_sec.attr,
-	&dev_attr_sleep_count.attr,
-	&dev_attr_pwr_on_off_src.attr,
-	NULL
-};
-ATTRIBUTE_GROUPS(sec_pm_debug);
-
-static int suspend_resume_pm_event(struct notifier_block *notifier,
-		unsigned long pm_event, void *unused)
-{
-	struct timespec64 sleep_time;
-	struct timespec64 total_time;
-	struct timespec64 suspend_resume_time;
-
-	switch (pm_event) {
-	case PM_SUSPEND_PREPARE:
-		/* monotonic time since boot */
-		last_monotime = ktime_get();
-		/* monotonic time since boot including the time spent in suspend */
-		last_stime = ktime_get_boottime();
-		break;
-	case PM_POST_SUSPEND:
-		/* monotonic time since boot */
-		curr_monotime = ktime_get();
-		/* monotonic time since boot including the time spent in suspend */
-		curr_stime = ktime_get_boottime();
-
-		total_time = ktime_to_timespec64(ktime_sub(curr_stime, last_stime));
-		suspend_resume_time =
-			ktime_to_timespec64(ktime_sub(curr_monotime, last_monotime));
-		sleep_time = timespec64_sub(total_time, suspend_resume_time);
-
-		total_sleep_time = timespec64_add(total_sleep_time, sleep_time);
-		sleep_count++;
-		break;
-	default:
-		break;
-	}
-	return NOTIFY_DONE;
-}
-
-static struct notifier_block sec_pm_notifier_block = {
-	.notifier_call = suspend_resume_pm_event,
-};
-
-static int sec_pm_debug_probe(struct platform_device *pdev)
-{
-	struct sec_pm_debug_info *info;
-	struct device *sec_pm_dev;
-	int ret;
-
-	info = devm_kzalloc(&pdev->dev, sizeof(*info), GFP_KERNEL);
-	if (!info) {
-		dev_err(&pdev->dev, "%s: Fail to alloc info\n", __func__);
-		return -ENOMEM;
-	}
-
-	platform_set_drvdata(pdev, info);
-	info->dev = &pdev->dev;
-
-	ret = register_pm_notifier(&sec_pm_notifier_block);
-	if (ret) {
-		dev_err(info->dev, "%s: failed to register PM notifier(%d)\n",
-				__func__, ret);
-		return ret;
-	}
-	total_sleep_time.tv_sec = 0;
-	total_sleep_time.tv_nsec = 0;
-
-	sec_pm_dev = sec_device_create(info, "pm");
-
-	if (IS_ERR(sec_pm_dev)) {
-		dev_err(info->dev, "%s: fail to create sec_pm_dev\n", __func__);
-		return PTR_ERR(sec_pm_dev);
-	}
-
-	info->sec_pm_dev = sec_pm_dev;
-
-	ret = sysfs_create_groups(&sec_pm_dev->kobj, sec_pm_debug_groups);
-	if (ret) {
-		dev_err(info->dev, "%s: failed to create sysfs groups(%d)\n",
-				__func__, ret);
-		goto err_create_sysfs;
-	}
+	cpufreq_update_policy(cpufreq_dev->policy->cpu);
 
 	return 0;
+}
 
-err_create_sysfs:
-	sec_device_destroy(sec_pm_dev->devt);
+static unsigned long get_level(struct sec_pm_cpufreq_dev *cpufreq_dev,
+			       unsigned long freq)
+{
+	struct cpufreq_frequency_table *freq_table = cpufreq_dev->freq_table;
+	unsigned long level;
+
+	for (level = 1; level <= cpufreq_dev->max_level; level++)
+		if (freq >= freq_table[level].frequency)
+			break;
+
+	return level;
+}
+
+/* For SMPL_WARN interrupt */
+int sec_pm_cpufreq_throttle_by_one_step(void)
+{
+	struct sec_pm_cpufreq_dev *cpufreq_dev;
+	unsigned long level;
+	unsigned long freq;
+
+	++throttle_count;
+
+	list_for_each_entry(cpufreq_dev, &sec_pm_cpufreq_list, node) {
+		if (!cpufreq_dev->policy || !cpufreq_dev->freq_table) {
+			pr_warn("%s: No cpufreq_dev\n", __func__);
+			continue;
+		}
+
+		/* Skip LITTLE cluster */
+		if (!cpufreq_dev->policy->cpu)
+			continue;
+
+		freq = cpufreq_dev->freq_table[0].frequency / 2;
+		level = get_level(cpufreq_dev, freq);
+		level += throttle_count;
+
+		if (level > cpufreq_dev->max_level)
+			level = cpufreq_dev->max_level;
+
+		sec_pm_cpufreq_set_max_freq(cpufreq_dev, level);
+	}
+
+	return throttle_count;
+}
+EXPORT_SYMBOL_GPL(sec_pm_cpufreq_throttle_by_one_step);
+
+void sec_pm_cpufreq_unthrottle(void)
+{
+	struct sec_pm_cpufreq_dev *cpufreq_dev;
+
+	pr_info("%s: throttle_count: %lu\n", __func__, throttle_count);
+
+	if (!throttle_count)
+		return;
+
+	throttle_count = 0;
+
+	list_for_each_entry(cpufreq_dev, &sec_pm_cpufreq_list, node) {
+		sec_pm_cpufreq_set_max_freq(cpufreq_dev, 0);
+	}
+}
+EXPORT_SYMBOL_GPL(sec_pm_cpufreq_unthrottle);
+
+static int sec_pm_cpufreq_notifier(struct notifier_block *nb,
+				    unsigned long event, void *data)
+{
+	struct cpufreq_policy *policy = data;
+	unsigned long max_freq;
+	struct sec_pm_cpufreq_dev *cpufreq_dev;
+
+	if (event != CPUFREQ_ADJUST)
+		return NOTIFY_DONE;
+
+	list_for_each_entry(cpufreq_dev, &sec_pm_cpufreq_list, node) {
+		/*
+		 * A new copy of the policy is sent to the notifier and can't
+		 * compare that directly.
+		 */
+		if (policy->cpu != cpufreq_dev->policy->cpu)
+			continue;
+
+		max_freq = cpufreq_dev->max_freq;
+
+		if (policy->max > max_freq)
+			cpufreq_verify_within_limits(policy, 0, max_freq);
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block sec_pm_cpufreq_notifier_block = {
+	.notifier_call = sec_pm_cpufreq_notifier,
+};
+
+static unsigned int find_next_max(struct cpufreq_frequency_table *table,
+				  unsigned int prev_max)
+{
+	struct cpufreq_frequency_table *pos;
+	unsigned int max = 0;
+
+	cpufreq_for_each_valid_entry(pos, table) {
+		if (pos->frequency > max && pos->frequency < prev_max)
+			max = pos->frequency;
+	}
+
+	return max;
+}
+
+static struct sec_pm_cpufreq_dev *
+__sec_pm_cpufreq_register(struct cpufreq_policy *policy)
+{
+	struct sec_pm_cpufreq_dev *cpufreq_dev;
+	void *ret;
+	unsigned int freq, i;
+	bool first;
+
+	if (IS_ERR_OR_NULL(policy)) {
+		pr_err("%s: cpufreq policy isn't valid: %p\n", __func__, policy);
+		return ERR_PTR(-EINVAL);
+	}
+
+	i = cpufreq_table_count_valid_entries(policy);
+	if (!i) {
+		pr_err("%s: CPUFreq table not found or has no valid entries\n",
+			 __func__);
+		return ERR_PTR(-ENODEV);
+	}
+
+	cpufreq_dev = kzalloc(sizeof(*cpufreq_dev), GFP_KERNEL);
+	if (!cpufreq_dev)
+		return ERR_PTR(-ENOMEM);
+
+	cpufreq_dev->policy = policy;
+
+	cpufreq_dev->max_level = i - 1;
+
+	cpufreq_dev->freq_table = kmalloc_array(i,
+					sizeof(*cpufreq_dev->freq_table),
+					GFP_KERNEL);
+	if (!cpufreq_dev->freq_table) {
+		pr_err("%s: fail to allocate freq_table\n", __func__);
+		ret = ERR_PTR(-ENOMEM);
+		goto free_cpufreq_dev;
+	}
+
+	/* Fill freq-table in descending order of frequencies */
+	for (i = 0, freq = -1; i <= cpufreq_dev->max_level; i++) {
+		freq = find_next_max(policy->freq_table, freq);
+		cpufreq_dev->freq_table[i].frequency = freq;
+
+		/* Warn for duplicate entries */
+		if (!freq)
+			pr_warn("%s: table has duplicate entries\n", __func__);
+		else
+			pr_debug("%s: freq:%u KHz\n", __func__, freq);
+	}
+
+	cpufreq_dev->max_freq = cpufreq_dev->freq_table[0].frequency;
+
+	/* Register the notifier for first cpufreq device */
+	first = list_empty(&sec_pm_cpufreq_list);
+	list_add(&cpufreq_dev->node, &sec_pm_cpufreq_list);
+
+	if (first)
+		cpufreq_register_notifier(&sec_pm_cpufreq_notifier_block,
+					  CPUFREQ_POLICY_NOTIFIER);
+
+	return cpufreq_dev;
+
+free_cpufreq_dev:
+	kfree(cpufreq_dev);
+
 	return ret;
 }
 
-static int sec_pm_debug_remove(struct platform_device *pdev)
+struct sec_pm_cpufreq_dev *
+sec_pm_cpufreq_register(struct cpufreq_policy *policy)
 {
-	struct sec_pm_debug_info *info = platform_get_drvdata(pdev);
+	pr_info("%s\n", __func__);
 
-	sec_device_destroy(info->sec_pm_dev->devt);
-	return 0;
+	return __sec_pm_cpufreq_register(policy);
 }
+EXPORT_SYMBOL_GPL(sec_pm_cpufreq_register);
 
-static const struct of_device_id sec_pm_debug_match[] = {
-	{ .compatible = "samsung,sec-pm-debug", },
-	{ },
-};
-MODULE_DEVICE_TABLE(of, sec_pm_debug_match);
-
-static struct platform_driver sec_pm_debug_driver = {
-	.driver = {
-		.name = "sec-pm-debug",
-		.owner = THIS_MODULE,
-		.of_match_table = of_match_ptr(sec_pm_debug_match),
-	},
-	.probe = sec_pm_debug_probe,
-	.remove = sec_pm_debug_remove,
-};
-
-static int __init sec_pm_debug_init(void)
+void sec_pm_cpufreq_unregister(struct sec_pm_cpufreq_dev *cpufreq_dev)
 {
-	return platform_driver_register(&sec_pm_debug_driver);
-}
-late_initcall(sec_pm_debug_init);
+	bool last;
 
-static void __exit sec_pm_debug_exit(void)
-{
-	platform_driver_unregister(&sec_pm_debug_driver);
-}
-module_exit(sec_pm_debug_exit);
+	pr_info("%s\n", __func__);
 
-MODULE_SOFTDEP("pre: acpm-mfd-bus");
+	if (!cpufreq_dev)
+		return;
+
+	list_del(&cpufreq_dev->node);
+	/* Unregister the notifier for the last cpufreq device */
+	last = list_empty(&sec_pm_cpufreq_list);
+
+	if (last)
+		cpufreq_unregister_notifier(&sec_pm_cpufreq_notifier_block,
+					    CPUFREQ_POLICY_NOTIFIER);
+
+	kfree(cpufreq_dev->freq_table);
+	kfree(cpufreq_dev);
+}
+EXPORT_SYMBOL_GPL(sec_pm_cpufreq_unregister);
+
 MODULE_AUTHOR("Minsung Kim <ms925.kim@samsung.com>");
-MODULE_DESCRIPTION("SEC PM Debug Driver");
+MODULE_DESCRIPTION("SEC PM CPU Frequency Control");
 MODULE_LICENSE("GPL");

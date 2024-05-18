@@ -20,16 +20,17 @@
 #include <linux/cpufreq.h>
 
 struct sec_pm_cpufreq_dev {
-	struct cpufreq_frequency_table *freq_table;
+	unsigned int id;
 	unsigned int max_freq;
+	unsigned int min_freq;
+	struct cpufreq_frequency_table *freq_table;
 	unsigned int max_level;
 	unsigned int cur_level;
 	struct cpufreq_policy *policy;
 	struct list_head node;
-	struct freq_qos_request qos_req;
 };
 
-#if IS_ENABLED(CONFIG_SEC_PM_CPUFREQ)
+#ifdef CONFIG_SEC_PM_CPUFREQ
 struct sec_pm_cpufreq_dev *
 sec_pm_cpufreq_register(struct cpufreq_policy *policy);
 void sec_pm_cpufreq_unregister(struct sec_pm_cpufreq_dev *cdev);
@@ -37,9 +38,17 @@ int sec_pm_cpufreq_throttle_by_one_step(void);
 void sec_pm_cpufreq_unthrottle(void);
 #else
 static inline struct sec_pm_cpufreq_dev *
-sec_pm_cpufreq_register(struct cpufreq_policy *policy) { return NULL; }
-static inline void sec_pm_cpufreq_unregister(struct sec_pm_cpufreq_dev *cdev) {}
+sec_pm_cpufreq_register(struct cpufreq_policy *policy)
+{
+	return ERR_PTR(-ENOSYS);
+}
+
+static inline void sec_pm_cpufreq_unregister(struct sec_pm_cpufreq_dev *cdev)
+{
+	return;
+}
+
 static inline int sec_pm_cpufreq_throttle_by_one_step(void) { return 0; }
-static inline void sec_pm_cpufreq_unthrottle(void) {}
+static inline void sec_pm_cpufreq_unthrottle(void) { }
 #endif /* CONFIG_SEC_PM_FREQ */
 #endif /* _LINUX_SEC_PM_CPUFREQ_H */
