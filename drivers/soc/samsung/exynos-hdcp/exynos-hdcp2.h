@@ -14,7 +14,6 @@
 #include <linux/fs.h>
 #include <linux/miscdevice.h>
 #include <linux/mutex.h>
-#include <linux/module.h>
 
 #include "exynos-hdcp2-session.h"
 

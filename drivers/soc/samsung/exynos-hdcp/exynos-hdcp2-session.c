@@ -9,7 +9,6 @@
  * published by the Free Software Foundation.
  */
 #include <linux/slab.h>
-#include <linux/module.h>
 
 #include "exynos-hdcp2.h"
 #include "exynos-hdcp2-log.h"
@@ -18,8 +17,7 @@
  * generate data for a session data
  */
 
-struct hdcp_session_list g_hdcp_session_list;
-EXPORT_SYMBOL_GPL(g_hdcp_session_list);
+extern struct hdcp_session_list g_hdcp_session_list;
 
 enum hdcp_result hdcp_session_open(struct hdcp_sess_info *ss_info)
 {
@@ -523,5 +521,3 @@ void hdcp_link_list_destroy(struct hdcp_link_list *lk_list)
 	lk_head->prev = lk_head;
 	mutex_unlock(&lk_list->lk_mutex);
 }
-
-MODULE_LICENSE("GPL");

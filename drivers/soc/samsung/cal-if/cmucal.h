@@ -141,18 +141,9 @@ struct vclk {
 #ifdef CONFIG_DEBUG_FS
 	struct dentry		*dentry;
 #endif
-	int			is_fine_grain;
 };
 
 enum clk_pll_type {
-	frd_2021_rpll = 2021,
-	pll_0516x = 5160,
-	pll_0522x = 5220,
-	pll_0517x = 5170,
-	pll_0518x = 5180,
-	pll_0530x = 5300,
-	pll_0532x = 5320,
-
 	pll_0732x = 7320,
 	pll_0716x = 7160,
 	pll_0717x = 7170,
@@ -190,32 +181,25 @@ enum clk_pll_type {
 enum margin_id {
 	MARGIN_MIF,
 	MARGIN_INT,
-	MARGIN_CPUCL0,
-	MARGIN_CPUCL1,
-	MARGIN_CPUCL2,
-	MARGIN_NPU,
-	MARGIN_DSU,
-	MARGIN_DISP,
-	MARGIN_AUD,
-	MARGIN_CP,
-	MARGIN_MODEM,
+	MARGIN_BIG,
+	MARGIN_LIT,
 	MARGIN_G3D,
 	MARGIN_INTCAM,
 	MARGIN_CAM,
-	MARGIN_CSIS,
-	MARGIN_ISP,
-	MARGIN_VPC,
+	MARGIN_DISP,
+	MARGIN_G3DM,
+	MARGIN_CP,
+	MARGIN_FSYS0,
+	MARGIN_AUD,
+	MARGIN_IVA,
+	MARGIN_SCORE,
 	MARGIN_MFC,
-	MARGIN_MFC1,
-	MARGIN_INTSCI,
+	MARGIN_NPU,
+	MARGIN_MID,
+	MARGIN_DSP,
+	MARGIN_DNC,
+	MARGIN_TNR,
 	MAX_MARGIN_ID,
-};
-
-enum pll_freq_type {
-	NORAML_PLL,
-	HIGH_FREQ_PLL,
-	FRAC_PLL,
-	RPLL,
 };
 
 #define IS_FIXED_RATE(_id)	((_id & MASK_OF_TYPE) == FIXED_RATE_TYPE)
@@ -353,9 +337,6 @@ struct pll_spec {
 	unsigned long long fout_max;
 	unsigned int lock_time;
 	unsigned int flock_time;
-	unsigned int fdiv_min;
-	unsigned int fdiv_max;
-	unsigned int freq_type;
 };
 
 /*
@@ -369,7 +350,6 @@ struct cmucal_pll_table {
 	unsigned short		mdiv;
 	unsigned short		sdiv;
 	signed int		kdiv;
-	unsigned int		fdiv;
 };
 
 /*
@@ -389,10 +369,9 @@ struct cmucal_pll {
 	unsigned int		rate_count;
 	unsigned int		lock_time;
 	unsigned int		flock_time;
-	unsigned int		p_idx, m_idx, s_idx, k_idx, f_idx;
-	unsigned char		p_shift, m_shift, s_shift, k_shift, f_shift;
-	unsigned char		p_width, m_width, s_width, k_width, f_width;
-	unsigned int		freq_type;
+	unsigned int		p_idx, m_idx, s_idx, k_idx;
+	unsigned char		p_shift, m_shift, s_shift, k_shift;
+	unsigned char		p_width, m_width, s_width, k_width;
 };
 
 struct cmucal_clk_fixed_rate {
@@ -451,7 +430,7 @@ struct cmucal_clkout {
 	.ops		= NULL,						\
 }
 
-#define CMUCAL_ACPM_VCLK(_id, _lut, _list, _seq, _switch, _margin_id, _is_fine_grain)	\
+#define CMUCAL_ACPM_VCLK(_id, _lut, _list, _seq, _switch, _margin_id)	\
 [_id & MASK_OF_ID] = {	\
 	.id		= _id,						\
 	.name		= #_id,						\
@@ -463,7 +442,6 @@ struct cmucal_clkout {
 	.switch_info	= _switch,					\
 	.ops		= NULL,						\
 	.margin_id	= _margin_id,					\
-	.is_fine_grain	= _is_fine_grain,				\
 }
 
 #define SFR_BLOCK(_id, _pa, _size) \
@@ -510,28 +488,6 @@ struct cmucal_clkout {
 	.flock_time	= _ftime,					\
 }
 
-#define CLK_RPLL(_typ, _id, _pid, _lock, _enable, _stable,		\
-		_p, _m, _s, _f,						\
-		_rtable, _time, _ftime)					\
-[_id & MASK_OF_ID] = {	\
-	.clk.id		= _id,						\
-	.clk.pid	= EMPTY_CLK_ID,					\
-	.clk.name	= #_id,						\
-	.clk.offset_idx	= _lock,					\
-	.clk.enable_idx	= _enable,					\
-	.clk.status_idx	= _stable,					\
-	.p_idx		= _p,						\
-	.m_idx		= _m,						\
-	.s_idx		= _s,						\
-	.f_idx		= _f,						\
-	.type		= _typ,						\
-	.umux		= _pid,						\
-	.rate_table	= _rtable,					\
-	.rate_count	= (sizeof(_rtable) / sizeof((_rtable)[0])),	\
-	.lock_time	= _time,					\
-	.flock_time	= _ftime,					\
-}
-
 #define CLK_MUX(_id, _pids, _o, _so, _eo)		\
 [_id & MASK_OF_ID] = {	\
 	.clk.id		= _id,				\
@@ -562,7 +518,7 @@ struct cmucal_clkout {
 	.clk.status_idx	= _so,				\
 	.clk.enable_idx	= _eo,				\
 }
-#if defined(CONFIG_CMUCAL_QCH_IGNORE_SUPPORT) || defined(CONFIG_CMUCAL_QCH_IGNORE_SUPPORT_MODULE)
+#ifdef CONFIG_CMUCAL_QCH_IGNORE_SUPPORT
 #define CLK_QCH(_id, _o, _so, _eo, _ig)			\
 [_id & MASK_OF_ID] = {	\
 	.clk.id		= _id,				\
@@ -630,7 +586,6 @@ struct cmucal_clkout {
 		.pdiv	=	(_p),			\
 		.sdiv	=	(_s),			\
 		.kdiv	=	(0),			\
-		.fdiv	=	(0),			\
 	}
 
 #define PLL_RATE_MPSK(_rate, _m, _p, _s, _k)		\
@@ -640,17 +595,6 @@ struct cmucal_clkout {
 		.pdiv	=	(_p),			\
 		.sdiv	=	(_s),			\
 		.kdiv	=	(_k),			\
-		.fdiv	=	(0),			\
-	}
-
-#define PLL_RATE_MPSF(_rate, _m, _p, _s, _f)		\
-	{						\
-		.rate	=	(_rate),		\
-		.mdiv	=	(_m),			\
-		.pdiv	=	(_p),			\
-		.sdiv	=	(_s),			\
-		.kdiv	=	(0),			\
-		.fdiv	=	(_f),			\
 	}
 
 #define to_fixed_rate_clk(_clk)		container_of(_clk, struct cmucal_clk_fixed_rate, clk)
@@ -668,27 +612,16 @@ extern void *cmucal_get_sfr_node(unsigned int id);
 extern unsigned int cmucal_get_id(char *name);
 extern unsigned int cmucal_get_id_by_addr(unsigned int addr);
 extern void (*cal_data_init)(void);
+extern int (*cal_check_hiu_dvfs_id)(u32 id);
 extern void (*cal_set_cmu_smpl_warn)(void);
-extern char *(*cal_get_pd_name_by_cmu)(unsigned int addr);
-#if defined(CONFIG_DEBUG_FS) &&  (defined(CONFIG_CMUCAL_DEBUG) || defined(CONFIG_CMUCAL_DEBUG_MODULE))
+#ifdef CONFIG_CMUCAL_DEBUG
 extern void cmucal_dbg_set_cmu_top_base(u32 base_addr);
-extern void cmucal_dbg_set_cmu_aud_base(u32 base_addr);
-extern void cmucal_dbg_set_cmu_core_base(u32 base_addr);
 extern void cmucal_dbg_set_cmu_cpucl0_base(u32 base_addr);
-extern void cmucal_dbg_set_cmu_cpucl1_base(u32 base_addr);
+extern void cmucal_dbg_set_cmu_g3d_base(u32 base_addr);
+extern void cmucal_dbg_set_hpm_big_base(u32 base_addr);
 extern void cmucal_dbg_set_cmu_cpucl2_base(u32 base_addr);
-extern void cmucal_dbg_set_cmu_dsu_base(u32 base_addr);
-extern void cmucal_dbg_set_cmu_peris_base(u32 base_addr);
 #else
 static inline void cmucal_dbg_set_cmu_top_base(u32 base_addr)
-{
-	return ;
-}
-static inline void cmucal_dbg_set_cmu_aud_base(u32 base_addr)
-{
-	return ;
-}
-static inline void cmucal_dbg_set_cmu_core_base(u32 base_addr)
 {
 	return ;
 }
@@ -696,19 +629,15 @@ static inline void cmucal_dbg_set_cmu_cpucl0_base(u32 base_addr)
 {
 	return ;
 }
-static inline void cmucal_dbg_set_cmu_cpucl1_base(u32 base_addr)
+static inline void cmucal_dbg_set_cmu_g3d_base(u32 base_addr)
+{
+	return ;
+}
+static inline void cmucal_dbg_set_hpm_big_base(u32 base_addr)
 {
 	return ;
 }
 static inline void cmucal_dbg_set_cmu_cpucl2_base(u32 base_addr)
-{
-	return ;
-}
-static inline void cmucal_dbg_set_cmu_dsu_base(u32 base_addr)
-{
-	return ;
-}
-static inline void cmucal_dbg_set_cmu_peris_base(u32 base_addr)
 {
 	return ;
 }

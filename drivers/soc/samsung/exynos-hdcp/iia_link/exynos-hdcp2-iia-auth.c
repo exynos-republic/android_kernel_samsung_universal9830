@@ -10,7 +10,6 @@
  */
 #include "exynos-hdcp2-iia-auth.h"
 #include "../exynos-hdcp2-log.h"
-#include <linux/module.h>
 
 #define HDCP_TX_VERSION_2_2	HDCP_TX_VERSION_2_1
 
@@ -462,5 +461,3 @@ int determine_rx_hdcp_cap(struct hdcp_link_data *lk)
 	/* todo */
 	return 0;
 }
-
-MODULE_LICENSE("GPL");

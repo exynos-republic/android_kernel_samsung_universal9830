@@ -8,17 +8,14 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  */
-#include <soc/samsung/exynos-smc.h>
+#include <linux/smc.h>
 #include <linux/slab.h>
-#include <linux/module.h>
 #include <asm/cacheflush.h>
-#include <linux/dma-mapping.h>
 
 #include "exynos-hdcp2-teeif.h"
 #include "exynos-hdcp2.h"
 #include "exynos-hdcp2-log.h"
 
-extern struct device *device_hdcp;
 extern void __dma_inv_area(const void *start, size_t size);
 
 static struct hci_ctx hctx = {
@@ -45,7 +42,6 @@ int hdcp_tee_open(void)
 
 	/* send WSM address to SWd */
 	phys_addr = virt_to_phys((void *)hctx.msg);
-
 	ret = exynos_smc(SMC_HDCP_INIT, phys_addr, sizeof(struct hci_message), 0);
 	if (ret) {
 		hdcp_err("Fail to set up connection with SWd. ret(%d)\n", ret);
@@ -97,11 +93,9 @@ int hdcp_tee_comm(struct hci_message *hci)
 	 * So, cache should be flushed before sending data to TEE
 	 * and invalidate after come back to kernel
 	 */
-
-	// hack: mark on 5.4 __flush_dcache_area((void *)hci, sizeof(struct hci_message));
-	dma_map_single(device_hdcp, (void *)hci, sizeof(struct hci_message), DMA_TO_DEVICE);
+	__flush_dcache_area((void *)hci, sizeof(struct hci_message));
 	ret = exynos_smc(SMC_HDCP_PROT_MSG, 0, 0, 0);
-	dma_map_single(device_hdcp, (void *)hci, sizeof(struct hci_message), DMA_FROM_DEVICE);
+	__inval_dcache_area((void *)hci, sizeof(struct hci_message));
 
 	if (ret) {
 		hdcp_info("SWd returned(%x)\n", ret);
@@ -218,7 +212,7 @@ int teei_generate_master_key(uint32_t lk_type, uint8_t *emkey, size_t emkey_len)
 		return ret;
 
 	/* copy encrypted mkey & wrapped mkey to hdcp ctx */
-	memcpy(emkey, hci->genmkey.emkey, hci->genmkey.emkey_len);
+	memcpy(emkey, hci->genmkey.emkey, emkey_len);
 
 	/* check returned message from SWD */
 
@@ -397,7 +391,7 @@ int teei_generate_skey(uint32_t lk_type,
 		return ret;
 
 	/* copy encrypted mkey & wrapped mkey to hdcp ctx */
-	memcpy(eskey, hci->genskey.eskey, hci->genskey.eskey_len);
+	memcpy(eskey, hci->genskey.eskey, eskey_len);
 
 	/* todo: check returned message from SWD */
 
@@ -542,5 +536,3 @@ int teei_wrapped_key(uint8_t *key, uint32_t wrapped, uint32_t key_len)
 
 	return ret;
 }
-
-MODULE_LICENSE("GPL");

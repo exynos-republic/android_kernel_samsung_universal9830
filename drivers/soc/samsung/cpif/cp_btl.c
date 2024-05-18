@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2019, Samsung Electronics.
  *
@@ -27,16 +26,16 @@
 #include <linux/fs.h>
 #include <linux/memblock.h>
 
-#include <soc/samsung/exynos-smc.h>
+#include <linux/smc.h>
 
 #include "modem_utils.h"
 #include "cp_btl.h"
-#if IS_ENABLED(CONFIG_LINK_DEVICE_PCIE)
+#ifdef CONFIG_LINK_DEVICE_PCIE
 #include "s51xx_pcie.h"
 #endif
 
 #define BTL_READ_SIZE_MAX	SZ_1M
-#if IS_ENABLED(CONFIG_LINK_DEVICE_PCIE)
+#ifdef CONFIG_LINK_DEVICE_PCIE
 #define BTL_MAP_SIZE		SZ_1M	/* per PCI BAR2 limit */
 #endif
 
@@ -56,7 +55,7 @@ static int btl_open(struct inode *inode, struct file *filep)
 		return -ENOMEM;
 	}
 
-#if IS_ENABLED(CONFIG_LINK_DEVICE_PCIE)
+#ifdef CONFIG_LINK_DEVICE_PCIE
 	btl->last_pcie_atu_grp = -1;
 #endif
 
@@ -85,7 +84,7 @@ static ssize_t btl_read(struct file *filep, char __user *buf, size_t count, loff
 	int len = 0;
 	int ret = 0;
 
-#if IS_ENABLED(CONFIG_LINK_DEVICE_PCIE)
+#ifdef CONFIG_LINK_DEVICE_PCIE
 	struct link_device *ld;
 	struct modem_ctl *mc;
 	void *btl_buf;
@@ -129,7 +128,7 @@ static ssize_t btl_read(struct file *filep, char __user *buf, size_t count, loff
 			mif_err("%s: copy_to_user() error:%d", btl->name, ret);
 		break;
 	case LINKDEV_PCIE:
-#if IS_ENABLED(CONFIG_LINK_DEVICE_PCIE)
+#ifdef CONFIG_LINK_DEVICE_PCIE
 		ld = &btl->mld->link_dev;
 		mc = ld->mc;
 
@@ -232,23 +231,6 @@ static long btl_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 /* Command line parameter */
 static bool _is_enabled[MAX_BTL_ID] = {false, false};
 
-#if defined(MODULE)
-static int btl_set_enable(const char *str, const struct kernel_param *kp)
-{
-	if (!strcmp(str, "ON") || !strcmp(str, "on"))
-		_is_enabled[BTL_ID_0] = true;
-	if (!strcmp(str, "DUAL_ON") || !strcmp(str, "dual_on")) {
-		_is_enabled[BTL_ID_0] = true;
-		_is_enabled[BTL_ID_1] = true;
-	}
-	mif_info("%s enable:%d/%d\n", str, _is_enabled[BTL_ID_0], _is_enabled[BTL_ID_1]);
-	return 0;
-}
-static const struct kernel_param_ops cp_btl_param_ops = {
-	.set = &btl_set_enable,
-};
-module_param_cb(cp_btl, &cp_btl_param_ops, NULL, 0644);
-#else /* MODULE */
 static int btl_set_enable(char *str)
 {
 	if (!strcmp(str, "ON") || !strcmp(str, "on"))
@@ -275,7 +257,6 @@ static int __init btl_console_setup_alt(char *str)
 	return btl_set_enable(str);
 }
 __setup("androidboot.cp_btl=", btl_console_setup_alt);
-#endif /* MODULE */
 
 /* Create */
 static const struct file_operations btl_file_ops = {
@@ -337,7 +318,7 @@ int cp_btl_create(struct cp_btl *btl, struct device *dev)
 
 		/* BAAW */
 		exynos_smc(SMC_ID_CLK, SSS_CLK_ENABLE, 0, 0);
-		ret = (int)exynos_smc(SMC_ID, CP_BOOT_REQ_CP_RAM_LOGGING, 0, 0);
+		ret = exynos_smc(SMC_ID, CP_BOOT_REQ_CP_RAM_LOGGING, 0, 0);
 		if (ret) {
 			mif_err("exynos_smc() error:%d\n", ret);
 			goto create_exit;
@@ -380,7 +361,7 @@ create_exit:
 	if (btl->mem.v_base)
 		vunmap(btl->mem.v_base);
 
-#if !IS_ENABLED(CONFIG_SOC_EXYNOS9820)
+#if !defined(CONFIG_SOC_EXYNOS9820)
 	cp_shmem_release_rmem(btl->id, SHMEM_BTL);
 #endif
 

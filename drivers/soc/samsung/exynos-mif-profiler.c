@@ -10,8 +10,6 @@
 #include <soc/samsung/exynos-devfreq.h>
 #include <soc/samsung/exynos-bcm_dbg.h>
 
-extern int llc_get_en(void);
-
 /* Result during profile time */
 struct profile_result {
 	struct freq_cstate_result	fc_result;
@@ -24,8 +22,7 @@ struct profile_result {
 	u64			freq_stats0_sum;
 	u64			freq_stats_ratio;
 	u64			freq_stats0_avg;
-	u64			freq_stats1_sum;
-	int			llc_status;
+
 };
 
 static struct profiler {
@@ -97,12 +94,12 @@ u32 mifpro_get_freq_table(s32 id, u32 *table)
 
 u32 mifpro_get_max_freq(s32 id)
 {
-	return exynos_pm_qos_request(profiler.freq_infos.pm_qos_class_max);
+	return pm_qos_request(profiler.freq_infos.pm_qos_class_max);
 }
 
 u32 mifpro_get_min_freq(s32 id)
 {
-	return exynos_pm_qos_request(profiler.freq_infos.pm_qos_class);
+	return pm_qos_request(profiler.freq_infos.pm_qos_class);
 }
 
 u32 mifpro_get_freq(s32 id)
@@ -158,17 +155,12 @@ u32 mifpro_update_mode(s32 id, int mode)
 {
 	int i;
 
-	if (profiler.enabled == 0 && mode == 1) {
-		struct freq_cstate *fc = &profiler.fc;
-		struct freq_cstate_snapshot *fc_snap = &profiler.fc_snap[MIGOV];
-
-		sync_fcsnap_with_cur(fc, fc_snap, profiler.table_cnt);
-
+	if (!profiler.enabled && mode) {
 		exynos_bcm_calc_enable(1);
-
 		profiler.enabled = mode;
+		msleep(10);
 	}
-	else if (profiler.enabled == 1 && mode == 0) {
+	else if (profiler.enabled && !mode) {
 		exynos_bcm_calc_enable(0);
 		profiler.enabled = mode;
 
@@ -177,7 +169,6 @@ u32 mifpro_update_mode(s32 id, int mode)
 			memset(profiler.freq_stats[i], 0, sizeof(u64) * profiler.table_cnt);
 			memset(profiler.freq_stats_snap[i], 0, sizeof(u64) * profiler.table_cnt);
 			memset(profiler.result[MIGOV].freq_stats[i], 0, sizeof(u64) * profiler.table_cnt);
-
 		}
 
 		for (i = 0; i < NUM_OF_CSTATE; i++) {
@@ -192,11 +183,12 @@ u32 mifpro_update_mode(s32 id, int mode)
 		profiler.result[MIGOV].fc_result.profile_time = 0;
 		profiler.result[MIGOV].freq_stats0_sum = 0;
 		profiler.result[MIGOV].freq_stats0_avg = 0;
-		profiler.result[MIGOV].freq_stats1_sum = 0;
 		profiler.result[MIGOV].freq_stats_ratio = 0;
 		profiler.fc_snap[MIGOV].last_snap_time = 0;
 		return 0;
 	}
+	else if (!profiler.enabled && !mode)
+		return 0;
 
 	mifpro_update_profile(MIGOV);
 
@@ -204,17 +196,13 @@ u32 mifpro_update_mode(s32 id, int mode)
 }
 
 u64 mifpro_get_freq_stats0_sum(void) { return profiler.result[MIGOV].freq_stats0_sum; };
-u64 mifpro_get_freq_stats1_sum(void) { return profiler.result[MIGOV].freq_stats1_sum; };
 u64 mifpro_get_freq_stats0_avg(void) { return profiler.result[MIGOV].freq_stats0_avg; };
 u64 mifpro_get_freq_stats_ratio(void) { return profiler.result[MIGOV].freq_stats_ratio; };
-u64 mifpro_get_llc_status(void) { return profiler.result[MIGOV].llc_status; };
 
 struct private_fn_mif mif_pd_fn = {
 	.get_stats0_sum	= &mifpro_get_freq_stats0_sum,
 	.get_stats0_avg	= &mifpro_get_freq_stats0_avg,
-	.get_stats1_sum	= &mifpro_get_freq_stats1_sum,
 	.get_stats_ratio	= &mifpro_get_freq_stats_ratio,
-	.get_llc_status = &mifpro_get_llc_status,
 };
 
 struct domain_fn mif_fn = {
@@ -235,7 +223,6 @@ struct domain_fn mif_fn = {
  *			Gathering MIFFreq Information			*
  ************************************************************************/
 //ktime_t * exynos_stats_get_mif_time_in_state(void);
-extern u64 exynos_bcm_get_ccnt(unsigned int idx);
 u32 mifpro_update_profile(int user)
 {
 	struct freq_cstate *fc = &profiler.fc;
@@ -243,15 +230,9 @@ u32 mifpro_update_profile(int user)
 	struct freq_cstate_result *fc_result = &profiler.result[user].fc_result;
 	struct profile_result *result = &profiler.result[user];
 	int i;
-	u64 total_active_time = 0, freq_stats2_sum = 0, freq_stats3_sum = 0, ccnt, diff_ccnt;
-	static u64 prev_ccnt = 0;
+	u64 total_active_time = 0, freq_stats2_sum = 0, freq_stats3_sum = 0;
 
-	profiler.cur_freq_idx = get_idx_from_freq(profiler.table, profiler.table_cnt,
-			*(profiler.freq_infos.cur_freq), RELATION_LOW);
-	profiler.max_freq_idx = get_idx_from_freq(profiler.table, profiler.table_cnt,
-			exynos_pm_qos_request(profiler.freq_infos.pm_qos_class_max), RELATION_LOW);
-	profiler.min_freq_idx = get_idx_from_freq(profiler.table, profiler.table_cnt,
-			exynos_pm_qos_request(profiler.freq_infos.pm_qos_class), RELATION_HIGH);
+//	profiler.fc.time[ACTIVE] = exynos_stats_get_mif_time_in_state();
 
 	// Update time in state and get tables from DVFS driver
 	exynos_devfreq_get_profile(profiler.devfreq_type, fc->time, profiler.freq_stats);
@@ -266,28 +247,24 @@ u32 mifpro_update_profile(int user)
 	compute_freq_cstate_result(profiler.table, fc_result, profiler.table_cnt,
 					profiler.cur_freq_idx, result->avg_temp);
 
-	ccnt = exynos_bcm_get_ccnt(0);
-	diff_ccnt = ccnt - prev_ccnt;
-	prev_ccnt = ccnt;
-
 	result->freq_stats0_sum = 0;
-	result->freq_stats1_sum = 0;
 	fc_result->dyn_power = 0;
 	for (i = 0; i < profiler.table_cnt; i++) {
 		result->freq_stats0_sum += result->freq_stats[0][i];
-		result->freq_stats1_sum += result->freq_stats[1][i];
 		result->freq_stats0_avg += (result->freq_stats[0][i] << 40) / (profiler.table[i].freq / 1000);
 		total_active_time += fc_result->time[ACTIVE][i];
 		freq_stats2_sum += result->freq_stats[2][i];
-		freq_stats3_sum += result->freq_stats[3][i];
+		freq_stats3_sum += (result->freq_stats[3][i] * 1000000) / profiler.table[i].freq;
 		fc_result->dyn_power += ((result->freq_stats[0][i] * profiler.table[i].dyn_cost) / fc_result->profile_time);
 	}
 
 	result->freq_stats0_sum = result->freq_stats0_sum * 1000000000 / fc_result->profile_time;
-	result->freq_stats1_sum = result->freq_stats1_sum * 1000000000 / fc_result->profile_time;
 	result->freq_stats0_avg = result->freq_stats0_avg / total_active_time;
-	result->freq_stats_ratio = fc_result->profile_time * freq_stats3_sum / freq_stats2_sum / diff_ccnt;
-	result->llc_status = llc_get_en();
+
+	if (freq_stats2_sum != 0)
+		result->freq_stats_ratio = freq_stats3_sum / freq_stats2_sum;
+	else
+		result->freq_stats_ratio = 0;
 
 	if (profiler.tz) {
 		int temp = get_temp(profiler.tz);
@@ -308,8 +285,8 @@ static int register_export_fn(u32 *max_freq, u32 *min_freq, u32 *cur_freq)
 
 	exynos_devfreq_get_freq_infos(profiler.devfreq_type, freq_infos);
 
-//	*max_freq = freq_infos->max_freq;		/* get_org_max_freq(void) */
-	*max_freq = 3172000;
+	*max_freq = freq_infos->max_freq;		/* get_org_max_freq(void) */
+//	*max_freq = 3172000;
 	*min_freq = freq_infos->min_freq;		/* get_org_min_freq(void) */
 	*cur_freq = *freq_infos->cur_freq;		/* get_cur_freq(void)	  */
 	profiler.table_cnt = freq_infos->max_state;	/* get_freq_table_cnt(void)  */
@@ -369,7 +346,6 @@ static int init_profile_result(struct profile_result *result, int size)
 	return 0;
 }
 
-#ifdef CONFIG_EXYNOS_DEBUG_INFO
 static void show_profiler_info(void)
 {
 	int idx;
@@ -387,7 +363,6 @@ static void show_profiler_info(void)
 	if (profiler.migov_id != -1)
 		pr_info("support migov domain(id=%d)\n", profiler.migov_id);
 }
-#endif
 
 static int exynos_mif_profiler_probe(struct platform_device *pdev)
 {
@@ -453,9 +428,7 @@ static int exynos_mif_profiler_probe(struct platform_device *pdev)
 
 	ret = exynos_migov_register_domain(MIGOV_MIF, &mif_fn, &mif_pd_fn);
 
-#ifdef CONFIG_EXYNOS_DEBUG_INFO
 	show_profiler_info();
-#endif
 
 	return ret;
 }
@@ -483,5 +456,6 @@ static int exynos_mif_profiler_init(void)
 }
 late_initcall(exynos_mif_profiler_init);
 
+MODULE_SOFTDEP("pre: exynos-migov");
 MODULE_DESCRIPTION("Exynos MIF Profiler");
 MODULE_LICENSE("GPL");

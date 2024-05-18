@@ -13,7 +13,7 @@
 #include <linux/uaccess.h>
 #include <linux/smc.h>
 #include <asm/cacheflush.h>
-#include <soc/samsung/exynos-smc.h>
+#include <linux/smc.h>
 #include "iia_link/exynos-hdcp2-iia-auth.h"
 #include "exynos-hdcp2-teeif.h"
 #include "iia_link/exynos-hdcp2-iia-selftest.h"
@@ -28,16 +28,14 @@
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/irqreturn.h>
-#include <linux/dma-mapping.h>
 
 #define EXYNOS_HDCP_DEV_NAME	"hdcp2"
 
 struct miscdevice hdcp;
 static DEFINE_MUTEX(hdcp_lock);
+struct hdcp_session_list g_hdcp_session_list;
 enum hdcp_result hdcp_link_ioc_authenticate(void);
 extern enum dp_state dp_hdcp_state;
-extern struct hdcp_session_list g_hdcp_session_list;
-struct device *device_hdcp;
 
 struct hdcp_ctx {
 	struct delayed_work work;
@@ -50,6 +48,12 @@ struct hdcp_ctx {
 
 static struct hdcp_ctx h_ctx;
 static uint32_t inst_num;
+
+#if defined(CONFIG_HDCP2_FUNC_TEST_MODE)
+uint32_t func_test_mode = 1;
+#else
+uint32_t func_test_mode;
+#endif
 
 static long hdcp_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
@@ -241,12 +245,8 @@ static long hdcp_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		input_virt =  (uint8_t *)phys_to_virt(input_phys);
 		output_virt =  (uint8_t *)phys_to_virt(output_phys);
 
-		// hack: mark on 5.4
-		// __flush_dcache_area(input, packet_len);
-		// __flush_dcache_area(output, packet_len);
-
-		dma_map_single(device_hdcp, (void *)input_virt, packet_len, DMA_TO_DEVICE);
-		dma_map_single(device_hdcp, (void *)output_virt, packet_len, DMA_TO_DEVICE);
+		__flush_dcache_area(input_virt, packet_len);
+		__flush_dcache_area(output_virt, packet_len);
 
 		ret = encrypt_packet(pes_priv,
 				input_phys, packet_len,
@@ -363,6 +363,14 @@ static long hdcp_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	}
 #endif
 
+	case (uint32_t)HDCP_FUNC_TEST_MODE:
+	{
+		func_test_mode = 1;
+		hdcp_info("HDCP DRM always enable mode on\n");
+		break;
+	}
+
+
 	default:
 		hdcp_err("HDCP: Invalid IOC num(%d)\n", cmd);
 		return -ENOTTY;
@@ -416,6 +424,7 @@ static void exynos_hdcp_worker(struct work_struct *work)
 	}
 
 	hdcp_info("Exynos HDCP interrupt occur by LDFW.\n");
+	dp_logger_print("soc HDCP2 interrupt occur by LDFW.\n");
 	ret = hdcp_dplink_auth_check(HDCP_DRM_ON);
 }
 
@@ -455,13 +464,6 @@ static int exynos_hdcp_probe(struct platform_device *pdev)
 	err = devm_request_irq(&pdev->dev, h_ctx.irq,
 			exynos_hdcp_irq_handler,
 			IRQF_TRIGGER_RISING, pdev->name, NULL);
-
-	device_hdcp = &pdev->dev;
-
-	arch_setup_dma_ops(&pdev->dev, 0x0ULL, 1ULL << 36, NULL, false);
-	pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
-	dma_set_mask(&pdev->dev, DMA_BIT_MASK(36));
-
 	if (err) {
 		dev_err(&pdev->dev,
 				"Fail to request IRQ handler. err(%d) irq(%d)\n",
@@ -472,6 +474,7 @@ static int exynos_hdcp_probe(struct platform_device *pdev)
 	INIT_DELAYED_WORK(&h_ctx.work, exynos_hdcp_worker);
 	h_ctx.enabled = true;
 	err = exynos_smc(SMC_HDCP_NOTIFY_INTR_NUM, 0, 0, hwirq);
+
 	hdcp_info("Exynos HDCP driver probe done! (%d)\n", err);
 
 	return err;
@@ -504,6 +507,7 @@ static int __init hdcp_init(void)
 		return ret;
 	}
 
+	/* todo: do initialize sequence */
 	hdcp_session_list_init(&g_hdcp_session_list);
 #if defined(CONFIG_HDCP2_DP_ENABLE)
 	if (hdcp_dplink_init() < 0) {
@@ -550,4 +554,3 @@ module_exit(hdcp_exit);
 
 MODULE_DESCRIPTION("Exynos Secure hdcp driver");
 MODULE_AUTHOR("<hakmin_1.kim@samsung.com>");
-MODULE_LICENSE("GPL");

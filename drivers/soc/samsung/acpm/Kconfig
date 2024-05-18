@@ -3,8 +3,7 @@
 #
 
 menuconfig EXYNOS_ACPM
-	tristate "ACPM driver support"
-	depends on ARCH_EXYNOS
+	bool "ACPM driver support"
 	default n
 	help
 	  Enable ACPM support
@@ -48,18 +47,13 @@ config EXYNOS9610_ACPM
 
 config EXYNOS_ACPM_MFD
 	bool "EXYNOS_ACPM_MFD support"
-	depends on EXYNOS_ACPM
 	default y
 	help
 	  Enable ACPM_MFD support
 
 config EXYNOS_ACPM_S2D
-	tristate "EXYNOS_ACPM_S2D support"
+	bool "EXYNOS_ACPM_S2D support"
 	help
 	  Enable ACPM_S2D support
 
-config EXYNOS_ACPM_PLGDBG
-	tristate "EXYNOS ACPM plugin debugfs support"
-	help
-	  Enable PLUGIN_DBG support
 endif

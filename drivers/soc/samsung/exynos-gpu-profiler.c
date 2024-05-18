@@ -6,6 +6,7 @@
 #include <soc/samsung/cal-if.h>
 #include <soc/samsung/exynos-profiler.h>
 #include <soc/samsung/exynos-migov.h>
+
 #include "exynos-gpu-api.h"
 
 enum hwevent {
@@ -23,8 +24,10 @@ struct profile_result {
 
 	/* private data */
 	ktime_t			queued_time_snap[NUM_OF_Q];
-	ktime_t			queued_last_updated;
+	u64			input_nr_avg_cnt_snap;
+
 	ktime_t			queued_time_ratio[NUM_OF_Q];
+	u64			input_nr_avg_cnt;
 };
 
 static struct profiler {
@@ -102,7 +105,7 @@ void gpupro_get_power_change(s32 id, s32 freq_delta_ratio,
 {
 	struct profile_result *result = &profiler.result[MIGOV];
 	struct freq_cstate_result *fc_result = &result->fc_result;
-	int flag = (STATE_SCALE_WO_SPARE | STATE_SCALE_TIME | STATE_SCALE_WITH_ORG_CAP);
+	int flag = (STATE_SCALE_WITH_SPARE | STATE_SCALE_TIME);
 
 	get_power_change(profiler.table, profiler.table_cnt,
 		profiler.cur_freq_idx, profiler.min_freq_idx, profiler.max_freq_idx,
@@ -126,38 +129,10 @@ void gpupro_set_margin(s32 id, s32 margin)
 	return;
 }
 
-static void gpupro_reset_profiler(int user)
-{
-	struct freq_cstate *fc = &profiler.fc;
-	struct profile_result *result = &profiler.result[user];
-	struct freq_cstate_snapshot *fc_snap = &profiler.fc_snap[user];
-	ktime_t *cur_queued_time;
-	int idx;
-
-	profiler.fc.time[ACTIVE] = exynos_stats_get_gpu_time_in_state();
-	sync_fcsnap_with_cur(fc, fc_snap, profiler.table_cnt);
-
-	result->queued_last_updated = exynos_stats_get_gpu_queued_last_updated();
-	
-	cur_queued_time = exynos_stats_get_gpu_queued_job_time();
-	if (cur_queued_time) {
-		for (idx = 0; idx < NUM_OF_Q; idx++)
-			result->queued_time_snap[idx] = cur_queued_time[idx];
-	}
-}
-
 static u32 gpupro_update_profile(int user);
 u32 gpupro_update_mode(s32 id, int mode)
 {
-	if (profiler.enabled != mode) {
-		/* reset profiler struct at start time */
-		if (mode)
-			gpupro_reset_profiler(MIGOV);
-
-		profiler.enabled = mode;
-
-		return 0;
-	}
+	profiler.enabled = mode; //	mode  = 1 : migov start, update, 0 : migov stop
 	gpupro_update_profile(MIGOV);
 
 	return 0;
@@ -165,46 +140,45 @@ u32 gpupro_update_mode(s32 id, int mode)
 
 u64 gpupro_get_q_empty_pct(s32 type)
 {
-	return profiler.result[MIGOV].queued_time_ratio[type];
+	return RATIO_UNIT - profiler.result[MIGOV].queued_time_ratio[type];
 }
 
 u64 gpupro_get_input_nr_avg_cnt(void)
 {
-	return 0;
+	return profiler.result[MIGOV].input_nr_avg_cnt;
 }
 
 struct private_fn_gpu gpu_pd_fn = {
-	.get_q_empty_pct        = &gpupro_get_q_empty_pct,
-	.get_input_nr_avg_cnt   = &gpupro_get_input_nr_avg_cnt,
+	.get_q_empty_pct	= &gpupro_get_q_empty_pct,
+	.get_input_nr_avg_cnt	= &gpupro_get_input_nr_avg_cnt,
 };
 struct domain_fn gpu_fn = {
 	.get_table_cnt		= &gpupro_get_table_cnt,
 	.get_freq_table		= &gpupro_get_freq_table,
 	.get_max_freq		= &gpupro_get_max_freq,
 	.get_min_freq		= &gpupro_get_min_freq,
-	.get_freq		= &gpupro_get_freq,
-	.get_power		= &gpupro_get_power,
+	.get_freq			= &gpupro_get_freq,
+	.get_power			= &gpupro_get_power,
 	.get_power_change	= &gpupro_get_power_change,
 	.get_active_pct		= &gpupro_get_active_pct,
-	.get_temp		= &gpupro_get_temp,
-	.set_margin		= &gpupro_set_margin,
+	.get_temp			= &gpupro_get_temp,
+	.set_margin			= &gpupro_set_margin,
 	.update_mode		= &gpupro_update_mode,
 };
 
 /************************************************************************
  *			Gathering GPU Freq Information			*
  ************************************************************************/
-static u32 gpupro_update_profile(int user)
+#define GPU_GOV_PERIOD	4
+static u32 gpupro_update_profile(int user) // 250 ms //
 {
 	struct profile_result *result = &profiler.result[user];
 	struct freq_cstate *fc = &profiler.fc;
 	struct freq_cstate_snapshot *fc_snap = &profiler.fc_snap[user];
 	struct freq_cstate_result *fc_result = &result->fc_result;
+	u64 input_nr_avg_cnt;
 	ktime_t* cur_queued_time;
-	ktime_t cur_queued_last_updated;
-	ktime_t queued_updated_delta;
 	int idx;
-//	static int g_cnt;
 
 	/* Common Data */
 	if (profiler.tz) {
@@ -220,47 +194,43 @@ static u32 gpupro_update_profile(int user)
 	profiler.min_freq_idx = get_idx_from_freq(profiler.table,
 			profiler.table_cnt, exynos_stats_get_gpu_min_lock(), RELATION_HIGH);
 
-	profiler.fc.time[ACTIVE] = exynos_stats_get_gpu_time_in_state();
-
 	make_snapshot_and_time_delta(fc, fc_snap, fc_result, profiler.table_cnt);
 
 	compute_freq_cstate_result(profiler.table, fc_result, profiler.table_cnt,
 			profiler.cur_freq_idx, profiler.result[user].avg_temp);
 
 	/* Private Data */
+	profiler.fc.time[ACTIVE] = exynos_stats_get_gpu_time_in_state();
 	cur_queued_time = exynos_stats_get_gpu_queued_job_time();
-	cur_queued_last_updated = exynos_stats_get_gpu_queued_last_updated();
-	queued_updated_delta = cur_queued_last_updated - result->queued_last_updated;
-	if (cur_queued_time) {
-		for (idx = 0; idx < NUM_OF_Q; idx++) {
-			ktime_t queued_time_delta = cur_queued_time[idx] - result->queued_time_snap[idx];
-
-			if (queued_updated_delta)
-				result->queued_time_ratio[idx] =
-					(queued_time_delta * RATIO_UNIT) / queued_updated_delta;
-			else
-				result->queued_time_ratio[idx] = 0;
-			result->queued_time_ratio[idx] =
-				min_t(ktime_t, result->queued_time_ratio[idx], (ktime_t) RATIO_UNIT);
-			result->queued_time_snap[idx] = cur_queued_time[idx];
-		}
+	for (idx = 0; idx < NUM_OF_Q; idx++) {
+		ktime_t queued_time_delta = cur_queued_time[idx] - result->queued_time_snap[idx];
+		result->queued_time_ratio[idx] = (queued_time_delta * RATIO_UNIT) / fc_result->profile_time;
+		result->queued_time_ratio[idx] = min(result->queued_time_ratio[idx], (ktime_t) RATIO_UNIT);
+		result->queued_time_snap[idx] = cur_queued_time[idx];
 	}
-	result->queued_last_updated = cur_queued_last_updated;
+	input_nr_avg_cnt = exynos_stats_get_job_state_cnt();
+	result->input_nr_avg_cnt = (input_nr_avg_cnt - result->input_nr_avg_cnt_snap) * GPU_GOV_PERIOD
+					/ ktime_to_ms(fc_result->profile_time);
+	result->input_nr_avg_cnt_snap = input_nr_avg_cnt;
 
 	return 0;
 }
 
 /************************************************************************
- *						INITIALIZATON									*
+ *				INITIALIZATON				*
  ************************************************************************/
 static int register_export_fn(u32 *max_freq, u32 *min_freq, u32 *cur_freq)
 {
 	*max_freq = (unsigned long)gpu_dvfs_get_max_freq();
 	*min_freq = (unsigned long)gpu_dvfs_get_min_freq();
 	*cur_freq = (unsigned long)gpu_dvfs_get_cur_clock();
-
 	profiler.table_cnt = exynos_stats_get_gpu_table_size();
+	// 2020
 	profiler.fc.time[ACTIVE] = exynos_stats_get_gpu_time_in_state();
+
+	// Olympus
+	//profiler.fc.time[ACTIVE] = get_time_inf_freq(ACTIVE); 
+	//profiler.fc.time[CLKOFF] = get_time_in_freq(CLKOFF);
 
 	return 0;
 }
@@ -293,7 +263,6 @@ static int init_profile_result(struct profile_result *result, int size)
 	return 0;
 }
 
-#ifdef CONFIG_EXYNOS_DEBUG_INFO
 static void show_profiler_info(void)
 {
 	int idx;
@@ -311,7 +280,6 @@ static void show_profiler_info(void)
 	if (profiler.migov_id != -1)
 		pr_info("support migov domain(id=%d)\n", profiler.migov_id);
 }
-#endif
 
 static int exynos_gpu_profiler_probe(struct platform_device *pdev)
 {
@@ -372,9 +340,7 @@ static int exynos_gpu_profiler_probe(struct platform_device *pdev)
 
 	ret = exynos_migov_register_domain(MIGOV_GPU, &gpu_fn, &gpu_pd_fn);
 
-#ifdef CONFIG_EXYNOS_DEBUG_INFO
 	show_profiler_info();
-#endif
 
 	return ret;
 }

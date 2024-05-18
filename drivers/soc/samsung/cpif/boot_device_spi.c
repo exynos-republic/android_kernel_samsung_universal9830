@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2014-2019, Samsung Electronics.
  *
@@ -161,21 +160,40 @@ static int cpboot_spi_remove(struct spi_device *spi)
 
 static const struct of_device_id cpboot_spi_dt_match[] = {
 	{ .compatible = "samsung,exynos-cp-spi" },
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(of, cpboot_spi_dt_match);
 
 static struct spi_driver cpboot_spi_driver = {
-	.probe = cpboot_spi_probe,
-	.remove = cpboot_spi_remove,
 	.driver = {
 		.name = "cpboot_spi",
 		.owner = THIS_MODULE,
 		.of_match_table = of_match_ptr(cpboot_spi_dt_match),
-		.suppress_bind_attrs = true,
 	},
+	.probe = cpboot_spi_probe,
+	.remove = cpboot_spi_remove,
 };
-module_spi_driver(cpboot_spi_driver);
+
+static int __init cpboot_spi_init(void)
+{
+	int ret = 0;
+
+	ret = spi_register_driver(&cpboot_spi_driver);
+	if (ret) {
+		mif_err("spi_register_driver() error:%d\n", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static void __exit cpboot_spi_exit(void)
+{
+	spi_unregister_driver(&cpboot_spi_driver);
+}
+
+module_init(cpboot_spi_init);
+module_exit(cpboot_spi_exit);
 
 MODULE_DESCRIPTION("Exynos SPI driver to load CP bootloader");
 MODULE_LICENSE("GPL");

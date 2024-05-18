@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2014 Samsung Electronics.
  *
@@ -16,6 +15,8 @@
 #include "modem_utils.h"
 #include "link_device_memory.h"
 #include "link_device_memory_ctrlmsg_iosm.h"
+
+#ifdef GROUP_MEM_LINK_IOSM_MESSAGE
 
 #define pr_circ_idx(hdr) \
 	mif_info("circ: in=%d, out=%d\n", hdr->w_idx, hdr->r_idx)
@@ -260,7 +261,7 @@ void mdm_ready_handler(struct mem_link_device *mld, struct iosm_msg *msg)
 		return;
 	}
 
-	if (mld->attrs & LINK_ATTR_IPC_ALIGNED)
+	if (mld->attrs & LINK_ATTR(LINK_ATTR_IPC_ALIGNED))
 		ld->aligned = true;
 	else
 		ld->aligned = false;
@@ -409,3 +410,5 @@ static void __exit iosm_exit(void)
 	destroy_workqueue(iosm_wq);
 }
 module_exit(iosm_exit);
+
+#endif

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2011 Samsung Electronics.
  *
@@ -20,7 +19,7 @@
 #include "modem_prj.h"
 #include "link_device_memory.h"
 
-#define MIF_TAG	"cpif"
+#define MIF_TAG	"mif"
 
 #define IS_CONNECTED(iod, ld) ((iod)->link_type == (ld)->link_type)
 
@@ -29,6 +28,8 @@
 #define MIF_SEPARATOR "IPC_LOGGER(VER1.1)"
 #define MAX_IPC_SKB_SIZE 4096
 #define MAX_LOG_SIZE 64
+
+#define MIF_TAG	"mif"
 
 #define MAX_LOG_CNT (MAX_MIF_BUFF_SIZE / MAX_LOG_SIZE)
 #define MIF_ID_SIZE sizeof(enum mif_log_id)
@@ -133,7 +134,7 @@ static const char * const dev_format_string[] = {
 	[IPC_DEBUG]	= "DEBUG",
 };
 
-static const inline char *dev_str(u32 dev)
+static const inline char *dev_str(enum dev_format dev)
 {
 	if (unlikely(dev >= MAX_DEV_FORMAT))
 		return "INVALID";
@@ -222,7 +223,6 @@ static const char * const modem_state_string[] = {
 	[STATE_SIM_ATTACH]	= "SIM_ATTACH",
 	[STATE_SIM_DETACH]	= "SIM_DETACH",
 	[STATE_CRASH_WATCHDOG]	= "WDT_RESET",
-	[STATE_INIT] = "INIT",
 };
 
 static const inline char *cp_state_str(enum modem_state state)
@@ -292,17 +292,16 @@ int mif_dump_log(struct modem_shared *, struct io_device *);
 void mif_ipc_log(enum mif_log_id id,
 	struct modem_shared *msd, const char *data, size_t len);
 void _mif_irq_log(enum mif_log_id id,
-	struct modem_shared *msd, struct mif_irq_map irq_map, const char *data, size_t len);
+	struct modem_shared *msd, struct mif_irq_map, const char *, size_t len);
 void _mif_com_log(enum mif_log_id id,
 	struct modem_shared *msd, const char *data, ...);
 void _mif_time_log(enum mif_log_id id,
-	struct modem_shared *msd, struct timespec epoch, const char *data, size_t len);
+	struct modem_shared *msd, struct timespec epoch, const char *data, size_t);
 
 static inline struct link_device *find_linkdev(struct modem_shared *msd,
-		u32 link_type)
+		enum modem_link link_type)
 {
 	struct link_device *ld;
-
 	list_for_each_entry(ld, &msd->link_dev_list, list) {
 		if (ld->link_type == link_type)
 			return ld;
@@ -313,7 +312,6 @@ static inline struct link_device *find_linkdev(struct modem_shared *msd,
 static inline unsigned int count_bits(unsigned int n)
 {
 	unsigned int i;
-
 	for (i = 0; n != 0; i++)
 		n &= (n - 1);
 	return i;
@@ -329,10 +327,6 @@ void mif_pkt(u8 ch, const char *tag, struct sk_buff *skb);
 /* print buffer as hex string */
 int pr_buffer(const char *tag, const char *data, size_t data_len,
 							size_t max_len);
-#if IS_ENABLED(CONFIG_EXYNOS_MEMORY_LOGGER)
-int pr_buffer_memlog(const char *tag, const char *data, size_t data_len,
-							size_t max_len);
-#endif
 
 /* print a sk_buff as hex string */
 #define PRINT_SKBUFF_PROTOCOL_SIT	24
@@ -353,9 +347,6 @@ static inline void pr_skb(const char *tag, struct sk_buff *skb, struct link_devi
 		break;
 	}
 
-#if IS_ENABLED(CONFIG_EXYNOS_MEMORY_LOGGER)
-	pr_buffer_memlog(tag, (char *)((skb)->data), (size_t)((skb)->len), length);
-#endif
 	pr_buffer(tag, (char *)((skb)->data), (size_t)((skb)->len), length);
 }
 
@@ -375,13 +366,12 @@ int link_rx_flowctl_cmd(struct link_device *ld, const char *data, size_t len);
 
 /* Get an IO device */
 struct io_device *get_iod_with_format(struct modem_shared *msd,
-					u32 format);
+					enum dev_format format);
 
 static inline struct io_device *link_get_iod_with_format(
-			struct link_device *ld, u32 format)
+			struct link_device *ld, enum dev_format format)
 {
 	struct io_device *iod = get_iod_with_format(ld->msd, format);
-
 	return (iod && IS_CONNECTED(iod, ld)) ? iod : NULL;
 }
 
@@ -397,7 +387,7 @@ static inline struct io_device *link_get_iod_with_channel(
 	struct io_device *iod = get_iod_with_channel(ld->msd, channel);
 	struct mem_link_device *mld = ld->mdm_data->mld;
 
-	if (!iod && atomic_read(&mld->init_end_cnt))
+	if (!iod && atomic_read(&mld->cp_boot_done))
 		mif_err("No IOD matches channel (%d)\n", channel);
 
 	return (iod && IS_CONNECTED(iod, ld)) ? iod : NULL;
@@ -405,23 +395,13 @@ static inline struct io_device *link_get_iod_with_channel(
 
 /* insert iod to tree functions */
 struct io_device *insert_iod_with_format(struct modem_shared *msd,
-			u32 format, struct io_device *iod);
+			enum dev_format format, struct io_device *iod);
 void insert_iod_with_channel(struct modem_shared *msd, unsigned int channel,
 			     struct io_device *iod);
 
 /* iodev for each */
 typedef void (*action_fn)(struct io_device *iod, void *args);
-static inline void iodevs_for_each(struct modem_shared *msd, action_fn action, void *args)
-{
-	int i;
-
-	for (i = 0; i < msd->num_channels; i++) {
-		u8 ch = msd->ch[i];
-		struct io_device *iod = msd->ch2iod[ch];
-
-		action(iod, args);
-	}
-}
+void iodevs_for_each(struct modem_shared *msd, action_fn action, void *args);
 
 /* netif wake/stop queue of iod */
 void iodev_netif_wake(struct io_device *iod, void *args);
@@ -446,8 +426,7 @@ void mif_dump2format16(const u8 *data, int len, char *buff, char *tag);
 void mif_dump2format4(const u8 *data, int len, char *buff, char *tag);
 void mif_print_dump(const u8 *data, int len, int width);
 
-/*
- * ---------------------------------------------------------------------------
+/*---------------------------------------------------------------------------
 
 				IPv4 Header Format
 
@@ -474,12 +453,10 @@ void mif_print_dump(const u8 *data, int len, int width);
 		The 2nd bit is "Dont Fragment" bit.
 		The 3rd bit is "More Fragments" bit.
 
----------------------------------------------------------------------------
-*/
+---------------------------------------------------------------------------*/
 #define IPV4_HDR_SIZE	20
 
-/*
- * -------------------------------------------------------------------------
+/*-------------------------------------------------------------------------
 
 				TCP Header Format
 
@@ -503,12 +480,10 @@ void mif_print_dump(const u8 *data, int len, int width);
 	|                             data                              |
 	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
--------------------------------------------------------------------------
-*/
+-------------------------------------------------------------------------*/
 #define TCP_HDR_SIZE	20
 
-/*
- * -------------------------------------------------------------------------
+/*-------------------------------------------------------------------------
 
 				UDP Header Format
 
@@ -520,8 +495,7 @@ void mif_print_dump(const u8 *data, int len, int width);
 	|                             data                              |
 	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
--------------------------------------------------------------------------
-*/
+-------------------------------------------------------------------------*/
 #define UDP_HDR_SIZE	8
 
 void print_ipv4_packet(const u8 *ip_pkt, enum direction dir);
@@ -533,24 +507,24 @@ void mif_init_irq(struct modem_irq *irq, unsigned int num, const char *name,
 int mif_request_irq(struct modem_irq *irq, irq_handler_t isr, void *data);
 void mif_enable_irq(struct modem_irq *irq);
 void mif_disable_irq(struct modem_irq *irq);
-bool mif_gpio_set_value(struct cpif_gpio *gpio, int value, unsigned int delay_ms);
-int mif_gpio_get_value(struct cpif_gpio *gpio, bool log_print);
-int mif_gpio_toggle_value(struct cpif_gpio *gpio, int delay_ms);
+bool mif_gpio_set_value(unsigned int gpio, int value, unsigned int delay_ms);
+int mif_gpio_get_value(unsigned int gpio, bool log_print);
+int mif_gpio_toggle_value(unsigned int gpio, int delay_ms);
 
 struct file *mif_open_file(const char *path);
 void mif_save_file(struct file *fp, const char *buff, size_t size);
 void mif_close_file(struct file *fp);
 
 int board_gpio_export(struct device *dev,
-		unsigned int gpio, bool dir, const char *name);
+		unsigned gpio, bool dir, const char *name);
 
 void make_gpio_floating(unsigned int gpio, bool floating);
 
-#if IS_ENABLED(CONFIG_ARGOS)
+#ifdef CONFIG_ARGOS
 /* kernel team needs to provide argos header file. !!!
  * As of now, there's nothing to use.
  */
-#if IS_ENABLED(CONFIG_SCHED_HMP)
+#ifdef CONFIG_SCHED_HMP
 extern struct cpumask hmp_slow_cpu_mask;
 extern struct cpumask hmp_fast_cpu_mask;
 #endif
@@ -576,9 +550,11 @@ void set_wakeup_packet_log(bool enable);
  * sizeof(struct skb_shared_info): 512
  * 2048 + 512 = 2560 (0xA00)
  */
-#define MIF_BUFF_DEFAULT_PACKET_SIZE	(2048)
-#define MIF_BUFF_CELL_PADDING_SIZE	(512)
-#define MIF_BUFF_DEFAULT_CELL_SIZE	(MIF_BUFF_DEFAULT_PACKET_SIZE+MIF_BUFF_CELL_PADDING_SIZE)
+#ifdef CONFIG_CP_JUMBO_4K_WA
+#define MIF_BUFF_DEFAULT_CELL_SIZE	(4096 + 512)
+#else
+#define MIF_BUFF_DEFAULT_CELL_SIZE	(2048 + 512)
+#endif
 #define MIF_BUFF_MAP_CELL_SIZE	(sizeof(uint64_t))
 #define MIF_BITS_FOR_BYTE	(8)
 #define MIF_BITS_FOR_MAP_CELL	(MIF_BUFF_MAP_CELL_SIZE * MIF_BITS_FOR_BYTE)
@@ -601,8 +577,6 @@ struct mif_buff_mng {
 	int current_map_index;
 
 	struct list_head node;
-
-	bool enable_sw_zerocopy;
 };
 
 struct mif_buff_mng *init_mif_buff_mng(unsigned char *buffer_start,
@@ -632,73 +606,34 @@ void set_dflags(unsigned long flag);
 
 const char *get_cpif_driver_version(void);
 
-extern bool __skb_free_head_cp_zerocopy(struct sk_buff *skb);
-extern void cpif_enable_sw_zerocopy(void);
+#if defined(CONFIG_SEC_MODEM_S5000AP) && defined(CONFIG_SEC_MODEM_S5100)
+enum rmnet_link_type {
+	RMNET_LINK_4G = 0,
+	RMNET_LINK_5G,
+	MAX_RMNET_LINK
+};
 
-static inline struct wakeup_source *cpif_wake_lock_register(struct device *dev, const char *name)
-{
-	struct wakeup_source *ws = NULL;
+struct iod_storage {
+	u8 rmnet_ch2id[32];
+	struct io_device *rmnet[32];
+};
 
-	ws = wakeup_source_register(dev, name);
-	if (ws == NULL) {
-		mif_err("%s: wakelock register fail\n", name);
-		return NULL;
-	}
+struct rmnet_iod_storage {
+	u8 current_link[32];
 
-	return ws;
-}
+	struct iod_storage iod_pot[MAX_RMNET_LINK];
+};
 
-static inline void cpif_wake_lock_unregister(struct wakeup_source *ws)
-{
-	if (ws == NULL) {
-		mif_err("wakelock unregister fail\n");
-		return;
-	}
+void insert_rmnet_iod_with_channel(struct io_device *iod, u8 type);
+struct io_device *get_static_rmnet_iod_with_channel(u8 ch);
+int update_ul_path_table(struct mem_link_device *mld);
+int update_rmnet_status(struct io_device *iod, bool open);
+struct io_device *get_current_rmnet_tx_iod(u8 ch);
+void reset_cp_upload_cnt(void);
+bool check_cp_upload_cnt(void);
+#endif
 
-	wakeup_source_unregister(ws);
-}
-
-static inline void cpif_wake_lock(struct wakeup_source *ws)
-{
-	if (ws == NULL) {
-		mif_err("wakelock fail\n");
-		return;
-	}
-
-	__pm_stay_awake(ws);
-}
-
-static inline void cpif_wake_lock_timeout(struct wakeup_source *ws, long timeout)
-{
-	if (ws == NULL) {
-		mif_err("wakelock timeout fail\n");
-		return;
-	}
-
-	__pm_wakeup_event(ws, jiffies_to_msecs(timeout));
-}
-
-static inline void cpif_wake_unlock(struct wakeup_source *ws)
-{
-	if (ws == NULL) {
-		mif_err("wake unlock fail\n");
-		return;
-	}
-
-	__pm_relax(ws);
-}
-
-static inline int cpif_wake_lock_active(struct wakeup_source *ws)
-{
-	if (ws == NULL) {
-		mif_err("wake unlock fail\n");
-		return 0;
-	}
-
-	return ws->active;
-}
-
-#if IS_ENABLED(CONFIG_CPIF_MBIM)
+#ifdef CONFIG_USB_CONFIGFS_F_MBIM
 void mif_queue_skb(struct sk_buff *skb, int dir);
 #endif
 

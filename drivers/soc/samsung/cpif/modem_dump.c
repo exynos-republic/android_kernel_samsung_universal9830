@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2016 Samsung Electronics.
  *
@@ -17,14 +16,16 @@
 #include <linux/module.h>
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
+#include <linux/miscdevice.h>
 #include <linux/shm_ipc.h>
 
 #include "modem_prj.h"
 #include "modem_utils.h"
 #include "link_device_memory.h"
 
-static int save_log_dump(struct io_device *iod, struct link_device *ld, u8 __iomem *base,
-		size_t size)
+#ifdef GROUP_MEM_LINK_DEBUG
+
+static int save_log_dump(struct io_device *iod, struct link_device *ld, u8 __iomem *base, size_t size)
 {
 	struct sk_buff *skb = NULL;
 	size_t alloc_size = 0xE00;
@@ -58,14 +59,11 @@ static int save_log_dump(struct io_device *iod, struct link_device *ld, u8 __iom
 		skbpriv(skb)->ld = ld;
 		skbpriv(skb)->lnk_hdr = false;
 		skbpriv(skb)->sipc_ch = iod->ch;
-		skbpriv(skb)->napi = NULL;
-
 		ret = iod->recv_skb_single(iod, ld, skb);
 		if (unlikely(ret < 0)) {
 			struct modem_ctl *mc = ld->mc;
 
-			mif_err_limited("%s: %s<-%s: %s->recv_skb fail (%d)\n",
-					ld->name, iod->name, mc->name, iod->name, ret);
+			mif_err_limited("%s: %s<-%s: %s->recv_skb fail (%d)\n", ld->name, iod->name, mc->name, iod->name, ret);
 			dev_kfree_skb_any(skb);
 			return ret;
 		}
@@ -97,9 +95,10 @@ int cp_get_log_dump(struct io_device *iod, struct link_device *ld, unsigned long
 	cp_num = ld->mdm_data->cp_num;
 	switch (log_dump.idx) {
 	case LOG_IDX_SHMEM:
-#if IS_ENABLED(CONFIG_CACHED_LEGACY_RAW_RX_BUFFER)
+#ifdef CONFIG_CACHED_LEGACY_RAW_RX_BUFFER
 		base = phys_to_virt(cp_shmem_get_base(cp_num, SHMEM_IPC));
 		size = cp_shmem_get_size(cp_num, SHMEM_IPC);
+		__inval_dcache_area((void *)base, size);
 #else
 		base = mld->base;
 		size = mld->size;
@@ -116,7 +115,7 @@ int cp_get_log_dump(struct io_device *iod, struct link_device *ld, unsigned long
 		size = mld->acpm_size;
 		break;
 
-#if IS_ENABLED(CONFIG_CP_BTL)
+#ifdef CONFIG_CP_BTL
 	case LOG_IDX_CP_BTL:
 		if (!ld->mdm_data->btl.enabled) {
 			mif_info("%s CP BTL is disabled\n", iod->name);
@@ -128,18 +127,13 @@ int cp_get_log_dump(struct io_device *iod, struct link_device *ld, unsigned long
 #endif
 
 	case LOG_IDX_DATABUF:
+#if defined(CONFIG_CP_PKTPROC_V2)
 		base = phys_to_virt(cp_shmem_get_base(cp_num, SHMEM_PKTPROC));
-#if IS_ENABLED(CONFIG_CP_PKTPROC_UL)
-		size = cp_shmem_get_size(cp_num, SHMEM_PKTPROC) +
-			cp_shmem_get_size(cp_num, SHMEM_PKTPROC_UL);
-#else
 		size = cp_shmem_get_size(cp_num, SHMEM_PKTPROC);
+#else
+		base = phys_to_virt(cp_shmem_get_base(cp_num, SHMEM_PKTPROC));
+		size = cp_shmem_get_size(cp_num, SHMEM_PKTPROC) + cp_shmem_get_size(cp_num, SHMEM_ZMC);
 #endif
-		break;
-
-	case LOG_IDX_L2B:
-		base = phys_to_virt(cp_shmem_get_base(cp_num, SHMEM_L2B));
-		size = cp_shmem_get_size(cp_num, SHMEM_L2B);
 		break;
 
 	default:
@@ -166,3 +160,5 @@ int cp_get_log_dump(struct io_device *iod, struct link_device *ld, unsigned long
 
 	return save_log_dump(iod, ld, base, size);
 }
+
+#endif

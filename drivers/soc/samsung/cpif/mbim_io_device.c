@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2019 Samsung Electronics.
  *
@@ -42,7 +41,7 @@ int mbim_xmit(struct sk_buff *skb)
 	getnstimeofday(&ts);
 #endif
 
-#if IS_ENABLED(CONFIG_NET_SUPPORT_DROPDUMP)
+#ifdef CONFIG_NET_SUPPORT_DROPDUMP
 	skb->dropmask = PACKET_OUT;
 #endif
 

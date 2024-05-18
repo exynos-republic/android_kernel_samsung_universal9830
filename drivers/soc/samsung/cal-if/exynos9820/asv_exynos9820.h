@@ -187,7 +187,6 @@ void id_get_rev(unsigned int *main_rev, unsigned int *sub_rev)
 	*main_rev = id_tbl.main_rev;
 	*sub_rev =  id_tbl.sub_rev;
 }
-EXPORT_SYMBOL_GPL(id_get_rev);
 
 int id_get_product_line(void)
 {
@@ -204,14 +203,14 @@ int asv_table_init(void)
 	int i;
 	unsigned int *p_table;
 	unsigned int *regs;
-//	unsigned long tmp;
+	unsigned long tmp;
 
 	p_table = (unsigned int *)&asv_tbl;
 
-//	for (i = 0; i < ASV_INFO_ADDR_CNT; i++) {
-//		exynos_smc_readsfr((unsigned long)(ASV_TABLE_BASE + 0x4 * i), &tmp);
-//		*(p_table + i) = (unsigned int)tmp;
-//	}
+	for (i = 0; i < ASV_INFO_ADDR_CNT; i++) {
+		exynos_smc_readsfr((unsigned long)(ASV_TABLE_BASE + 0x4 * i), &tmp);
+		*(p_table + i) = (unsigned int)tmp;
+	}
 
 	p_table = (unsigned int *)&id_tbl;
 
@@ -233,5 +232,4 @@ int asv_table_init(void)
 
 	return asv_tbl.asv_table_version;
 }
-EXPORT_SYMBOL_GPL(asv_table_init);
 #endif

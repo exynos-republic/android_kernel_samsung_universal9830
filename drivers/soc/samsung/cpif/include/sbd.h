@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2010 Samsung Electronics.
  *
@@ -16,31 +15,47 @@
 #ifndef __MODEM_INCLUDE_SBD_H__
 #define __MODEM_INCLUDE_SBD_H__
 
+/**
+@file		sbd.h
+@brief		header file for shared buffer descriptor (SBD) architecture
+		designed by MIPI Alliance
+@date		2014/02/05
+@author		Hankook Jang (hankook.jang@samsung.com)
+*/
+
+#ifdef GROUP_MEM_LINK_SBD
+/**
+@addtogroup group_mem_link_sbd
+@{
+*/
+
 #include <linux/types.h>
 #include <linux/kfifo.h>
 #include "modem_v1.h"
+
+#include "link_device_memory_config.h"
 #include "circ_queue.h"
 
 /*
- * Abbreviations
- * =============
- * SB, sb	Shared Buffer
- * SBD, sbd	Shared Buffer Descriptor
- * SBDV, sbdv	Shared Buffer Descriptor Vector (Array)
- * --------
- * RB, rb	Ring Buffer
- * RBO, rbo	Ring Buffer Offset (offset of an RB)
- * RBD, rbd	Ring Buffer Descriptor (descriptor of an RB)
- * RBDO, rbdo	Ring Buffer Descriptor Offset (offset of an RBD)
- * --------
- * RBP, rbp	Ring Buffer Pointer (read pointer, write pointer)
- * RBPS, rbps	Ring Buffer Pointer Set (set of RBPs)
- * --------
- * CH, ch	Channel
- * CHD, chd	Channel Descriptor
- * --------
- * desc	descriptor
- */
+Abbreviations
+=============
+SB, sb		Shared Buffer
+SBD, sbd	Shared Buffer Descriptor
+SBDV, sbdv	Shared Buffer Descriptor Vector (Array)
+--------
+RB, rb		Ring Buffer
+RBO, rbo	Ring Buffer Offset (offset of an RB)
+RBD, rbd	Ring Buffer Descriptor (descriptor of an RB)
+RBDO, rbdo	Ring Buffer Descriptor Offset (offset of an RBD)
+--------
+RBP, rbp	Ring Buffer Pointer (read pointer, write pointer)
+RBPS, rbps	Ring Buffer Pointer Set (set of RBPs)
+--------
+CH, ch		Channel
+CHD, chd	Channel Descriptor
+--------
+desc		descriptor
+*/
 
 #define CMD_DESC_RGN_OFFSET	0
 #define CMD_DESC_RGN_SIZE	SZ_64K
@@ -59,123 +74,151 @@
 #define MAX_SBD_SIPC_CHANNELS	256	/* 2 ^ 8	*/
 #define MAX_SBD_LINK_IDS	32	/* up to 32 ids	*/
 
-/*
- * @brief	Priority for QoS(Quality of Service)
- */
+/**
+@brief		Priority for QoS(Quality of Service)
+*/
 enum qos_prio {
 	QOS_HIPRIO = 10,
 	QOS_NORMAL,
 	QOS_MAX_PRIO,
 };
 
-/*
- * @brief	SBD Ring Buffer Descriptor
- *		(i.e. IPC Channel Descriptor Structure in MIPI LLI_IPC_AN)
- */
+/**
+@brief		SBD Ring Buffer Descriptor
+		(i.e. IPC Channel Descriptor Structure in MIPI LLI_IPC_AN)
+*/
 struct __packed sbd_rb_desc {
 	/*
-	 * ch		Channel number defined in the Samsung IPC specification
-	 * --------
-	 * reserved
-	 */
+	ch		Channel number defined in the Samsung IPC specification
+	--------
+	reserved
+	*/
 	u16 ch;
 	u16 reserved;
 
-	/* direction	0 (UL, TX, AP-to-CP), 1 (DL, RX, CP-to-AP)
-	 * --------
-	 * signaling	0 (polling), 1 (interrupt)
-	 */
+	/*
+	direction	0 (UL, TX, AP-to-CP), 1 (DL, RX, CP-to-AP)
+	--------
+	signaling	0 (polling), 1 (interrupt)
+	*/
 	u16 direction;
 	u16 signaling;
 
 	/*
-	 * Mask to be written to the signal register (viz. 1 << @@id)
-	 * (i.e. write_signal)
-	 */
+	Mask to be written to the signal register (viz. 1 << @@id)
+	(i.e. write_signal)
+	*/
 	u32 sig_mask;
 
 	/*
-	 * length	Length of an SBD Ring Buffer
-	 * --------
-	 * id		(1) ID for a link channel that consists of an RB pair
-	 * 		(2) Index into each array in the set of RBP arrays
-	 *		    N.B. set of RBP arrays =
-	 *	        	{[ul_rp], [ul_wp], [dl_rp], [dl_wp]}
-	 */
+	length		Length of an SBD Ring Buffer
+	--------
+	id		(1) ID for a link channel that consists of an RB pair
+			(2) Index into each array in the set of RBP arrays
+			    N.B. set of RBP arrays =
+			    {[ul_rp], [ul_wp], [dl_rp], [dl_wp]}
+	*/
 	u16 length;
 	u16 id;
 
 	/*
-	 * buff_size		Size of each data buffer in an SBD RB (default 2048)
-	 * --------
-	 * payload_offset	Offset of the payload in each data buffer(default 0)
-	 */
+	buff_size	Size of each data buffer in an SBD RB (default 2048)
+	--------
+	payload_offset	Offset of the payload in each data buffer (default 0)
+	*/
 	u16 buff_size;
 	u16 payload_offset;
 };
 
-/*
- * @brief	SBD Channel Descriptor
- */
+/**
+@brief		SBD Channel Descriptor
+*/
 struct __packed sbd_rb_channel {
 	u32 rb_desc_offset;		/* RB Offset for Descriptor			*/
 	u32 buff_pos_array_offset;	/* RB Offset for Array of Each Buffer Position	*/
 };
 
-/*
- * @brief	SBD Global Descriptor
- */
+/**
+@brief		SBD Global Descriptor
+*/
 struct __packed sbd_global_desc {
-	/* Version */
+	/*
+	Version
+	*/
 	u32 version;
 
-	/* Number of link channels */
+	/*
+	Number of link channels
+	*/
 	u32 num_channels;
 
-	/* Offset of the array of "SBD Ring Buffer Pointers Set" in SHMEM */
+	/*
+	Offset of the array of "SBD Ring Buffer Pointers Set" in SHMEM
+	*/
 	u32 rpwp_array_offset;
 
-	/* Array of SBD channel descriptors */
+	/*
+	Array of SBD channel descriptors
+	*/
 	struct sbd_rb_channel rb_ch[MAX_SBD_LINK_IDS][ULDL];
 
-	/* Array of SBD ring buffer descriptor pairs */
+	/*
+	Array of SBD ring buffer descriptor pairs
+	*/
 	struct sbd_rb_desc rb_desc[MAX_SBD_LINK_IDS][ULDL];
 };
 
-/*
- * @brief	SBD ring buffer (with logical view)
- * @remark	physical SBD ring buffer
- *		= {length, *rp, *wp, offset array, size array}
- */
+#if 1
+#endif
+
+/**
+@brief		SBD ring buffer (with logical view)
+@remark		physical SBD ring buffer
+		= {length, *rp, *wp, offset array, size array}
+*/
 struct sbd_ring_buffer {
-	/* Spin-lock for each SBD RB */
+	/*
+	Spin-lock for each SBD RB
+	*/
 	spinlock_t lock;
 
-	/* Pointer to the "SBD link" device instance to which an RB belongs */
+	/*
+	Pointer to the "SBD link" device instance to which an RB belongs
+	*/
 	struct sbd_link_device *sl;
 
-	/* Pointer to the "zerocopy_adaptor" device instance to which an RB belongs */
+	/*
+	Pointer to the "zerocopy_adaptor" device instance to which an RB belongs
+	*/
 	struct zerocopy_adaptor *zdptr;
 
-	/* UL/DL socket buffer queues */
+	/*
+	UL/DL socket buffer queues
+	*/
 	struct sk_buff_head skb_q;
 
-	/* Whether or not link-layer header is used */
+	/*
+	Whether or not link-layer header is used
+	*/
 	bool lnk_hdr;
 
-	/* Whether or not zerocopy is used */
+	/*
+	Whether or not zerocopy is used
+	*/
 	bool zerocopy;
 
 	/*
-	 * Variables for receiving a frame with the SIPC5 "EXT_LEN" attribute
-	 * (With SBD architecture, a frame with EXT_LEN can be scattered into
-	 * consecutive multiple data buffer slots.)
-	 */
+	Variables for receiving a frame with the SIPC5 "EXT_LEN" attribute
+	(With SBD architecture, a frame with EXT_LEN can be scattered into
+	 consecutive multiple data buffer slots.)
+	*/
 	bool more;
 	unsigned int total;
 	unsigned int rcvd;
 
-	/* Link ID, SIPC channel, and IPC direction */
+	/*
+	Link ID, SIPC channel, and IPC direction
+	*/
 	u16 id;			/* for @desc->id			*/
 	u16 ch;			/* for @desc->ch			*/
 	u16 dir;		/* for @desc->direction			*/
@@ -183,13 +226,19 @@ struct sbd_ring_buffer {
 	u16 buff_size;		/* for @desc->buff_size			*/
 	u16 payload_offset;	/* for @desc->payload_offset		*/
 
-	/* Pointer to the array of pointers to each data buffer	*/
+	/*
+	Pointer to the array of pointers to each data buffer
+	*/
 	u8 **buff;
 
-	/* Pointer to the data buffer region in SHMEM */
+	/*
+	Pointer to the data buffer region in SHMEM
+	*/
 	u8 *buff_rgn;
 
-	/* Pointers to variables in the shared region for a physical SBD RB */
+	/*
+	Pointers to variables in the shared region for a physical SBD RB
+	*/
 	u16 *rp;			/* sl->rp[@dir][@id]			*/
 	u16 *wp;			/* sl->wp[@dir][@id]			*/
 	u32 *buff_pos_array;		/* Array of Each Buffer Position	*/
@@ -197,7 +246,9 @@ struct sbd_ring_buffer {
 	struct sbd_rb_channel *rb_ch;	/* desc->rb_ch[@id][@dir]		*/
 	struct sbd_rb_desc *rb_desc;	/* desc->rb_desc[@id][@dir]		*/
 
-	/* Pointer to the IO device and the link device to which an SBD RB belongs */
+	/*
+	Pointer to the IO device and the link device to which an SBD RB belongs
+	*/
 	struct io_device *iod;
 	struct link_device *ld;
 
@@ -206,121 +257,171 @@ struct sbd_ring_buffer {
 };
 
 struct sbd_link_attr {
-	/* Link ID and SIPC channel number */
+	/*
+	Link ID and SIPC channel number
+	*/
 	u16 id;
 	u16 ch;
 
-	/* Whether or not link-layer header is used */
+	/*
+	Whether or not link-layer header is used
+	*/
 	bool lnk_hdr;
 
-	/* Length of an SBD RB */
+	/*
+	Length of an SBD RB
+	*/
 	unsigned int rb_len[ULDL];
 
-	/* Size of the data buffer for each SBD in an SBD RB */
+	/*
+	Size of the data buffer for each SBD in an SBD RB
+	*/
 	unsigned int buff_size[ULDL];
 
-	/* Bool variable to check if SBD ipc device supports zerocopy */
+	/*
+	Bool variable to check if SBD ipc device supports zerocopy
+	*/
 	bool zerocopy;
 };
 
 struct zerocopy_adaptor {
-	/* Spin-lock for each zerocopy_adaptor */
+	/*
+	Spin-lock for each zerocopy_adaptor
+	*/
 	spinlock_t lock;
 
-	/* Spin-lock for kfifo */
+	/*
+	Spin-lock for kfifo
+	*/
 	spinlock_t lock_kfifo;
 
-	/* SBD ring buffer that matches this zerocopy_adaptor */
+	/*
+	SBD ring buffer that matches this zerocopy_adaptor
+	*/
 	struct sbd_ring_buffer *rb;
 
-	/* Variables to manage previous rp */
+	/*
+	Variables to manage previous rp
+	*/
 	u16 pre_rp;
 
-	/* Pointers to variables in the shared region for a physical SBD RB */
+	/*
+	Pointers to variables in the shared region for a physical SBD RB
+	*/
 	u16 *rp;
 	u16 *wp;
 	u16 len;
 
-	/* Pointer to kfifo for saving dma_addr */
+	/*
+	Pointer to kfifo for saving dma_addr
+	*/
 	struct kfifo fifo;
 
-	/* Timer for when buffer pool is full */
+	/*
+	Timer for when buffer pool is full
+	*/
 	struct hrtimer datalloc_timer;
 };
 
 struct sbd_ipc_device {
-	/* Pointer to the IO device to which an SBD IPC device belongs */
+	/*
+	Pointer to the IO device to which an SBD IPC device belongs
+	*/
 	struct io_device *iod;
 
-	/* SBD IPC device ID == Link ID --> rb.id */
+	/*
+	SBD IPC device ID == Link ID --> rb.id
+	*/
 	u16 id;
 
-	/* SIPC Channel ID --> rb.ch */
+	/*
+	SIPC Channel ID --> rb.ch
+	*/
 	u16 ch;
 
 	atomic_t config_done;
 
-	/* UL/DL SBD RB pair in the kernel space */
+	/*
+	UL/DL SBD RB pair in the kernel space
+	*/
 	struct sbd_ring_buffer rb[ULDL];
 
-	/* Bool variable to check if SBD ipc device supports zerocopy */
+	/*
+	Bool variable to check if SBD ipc device supports zerocopy
+	*/
 	bool zerocopy;
 
-	/* Pointer to Zerocopy adaptor : memory is allocated for UL/DL zerocopy_adaptor */
+	/*
+	Pointer to Zerocopy adaptor : memory is allocated for UL/DL zerocopy_adaptor
+	*/
 	struct zerocopy_adaptor *zdptr;
 };
 
 struct sbd_link_device {
-	/* Pointer to the link device to which an SBD link belongs */
+	/*
+	Pointer to the link device to which an SBD link belongs
+	*/
 	struct link_device *ld;
 
-	/* Flag for checking whether or not an SBD link is active */
+	/*
+	Flag for checking whether or not an SBD link is active
+	*/
 	atomic_t active;
 
-	/* Version of SBD IPC */
+	/*
+	Version of SBD IPC
+	*/
 	unsigned int version;
 
 	/*
-	 * Start address of SHMEM
-	 * @shmem = SHMEM.VA
-	 */
+	Start address of SHMEM
+	@shmem = SHMEM.VA
+	*/
 	u8 *shmem;
 	unsigned int shmem_size;
 	unsigned int zmb_offset;
 
-	/* The number of link channels for AP-CP IPC */
+	/*
+	The number of link channels for AP-CP IPC
+	*/
 	unsigned int num_channels;
 
-	/* Table of link attributes */
+	/*
+	Table of link attributes
+	*/
 	struct sbd_link_attr link_attr[MAX_SBD_LINK_IDS];
 
-	/* Logical IPC devices */
+	/*
+	Logical IPC devices
+	*/
 	struct sbd_ipc_device ipc_dev[MAX_SBD_LINK_IDS];
 
 	/*
-	 * (1) Conversion tables from "Link ID (ID)" to "SIPC Channel Number (CH)"
-	 * (2) Conversion tables from "SIPC Channel Number (CH)" to "Link ID (ID)"
-	 */
+	(1) Conversion tables from "Link ID (ID)" to "SIPC Channel Number (CH)"
+	(2) Conversion tables from "SIPC Channel Number (CH)" to "Link ID (ID)"
+	*/
 	u16 id2ch[MAX_SBD_LINK_IDS];
 	u16 ch2id[MAX_SBD_SIPC_CHANNELS];
 
 	/*
-	 * Pointers to each array of arrays of SBD RB Pointers,
-	 * viz. rp[UL] = pointer to ul_rp[]
-	 *	rp[DL] = pointer to dl_rp[]
-	 *	wp[UL] = pointer to ul_wp[]
-	 *	wp[DL] = pointer to dl_wp[]
-	 */
+	Pointers to each array of arrays of SBD RB Pointers,
+	viz. rp[UL] = pointer to ul_rp[]
+	     rp[DL] = pointer to dl_rp[]
+	     wp[UL] = pointer to ul_wp[]
+	     wp[DL] = pointer to dl_wp[]
+	*/
 	u16 *rp[ULDL];
 	u16 *wp[ULDL];
 
 	/*
-	 * Above are variables for managing and controlling SBD IPC
-	 * ========================================================================
-	 * Below are pointers to the descriptor sections in SHMEM
-	 */
+	Above are variables for managing and controlling SBD IPC
+	========================================================================
+	Below are pointers to the descriptor sections in SHMEM
+	*/
 
-	/* Pointer to the SBD global descriptor header */
+	/*
+	Pointer to the SBD global descriptor header
+	*/
 	struct sbd_global_desc *g_desc;
 
 	unsigned long rxdone_mask;
@@ -361,7 +462,6 @@ static inline struct sbd_ipc_device *sbd_ch2dev(struct sbd_link_device *sl,
 						u16 ch)
 {
 	u16 id = sbd_ch2id(sl, ch);
-
 	return (id < MAX_SBD_LINK_IDS) ? &sl->ipc_dev[id] : NULL;
 }
 
@@ -376,7 +476,6 @@ static inline struct sbd_ring_buffer *sbd_ch2rb(struct sbd_link_device *sl,
 						enum direction dir)
 {
 	u16 id = sbd_ch2id(sl, ch);
-
 	return (id < MAX_SBD_LINK_IDS) ? &sl->ipc_dev[id].rb[dir] : NULL;
 }
 
@@ -497,18 +596,21 @@ struct sk_buff *sbd_pio_rx(struct sbd_ring_buffer *rb);
 
 #define SBD_UL_LIMIT		16	/* Uplink burst limit */
 
-#if IS_ENABLED(CONFIG_CP_ZEROCOPY)
-extern const struct attribute_group zerocopy_group;
-
+#if defined(CONFIG_CP_ZEROCOPY)
 struct sk_buff *sbd_pio_rx_zerocopy_adaptor(struct sbd_ring_buffer *rb, int use_memcpy);
 int allocate_data_in_advance(struct zerocopy_adaptor *zdptr);
 int setup_zerocopy_adaptor(struct sbd_ipc_device *ipc_dev);
 extern enum hrtimer_restart datalloc_timer_func(struct hrtimer *timer);
 #else
-static inline struct sk_buff *sbd_pio_rx_zerocopy_adaptor(struct sbd_ring_buffer *rb,
-		int use_memcpy) { return NULL; }
+static inline struct sk_buff *sbd_pio_rx_zerocopy_adaptor(struct sbd_ring_buffer *rb, int use_memcpy) { return NULL; }
 static inline int allocate_data_in_advance(struct zerocopy_adaptor *zdptr) { return 0; }
 static inline int setup_zerocopy_adaptor(struct sbd_ipc_device *ipc_dev) { return 0; }
+#endif
+
+/**
+// End of group_mem_link_sbd
+@}
+*/
 #endif
 
 #endif

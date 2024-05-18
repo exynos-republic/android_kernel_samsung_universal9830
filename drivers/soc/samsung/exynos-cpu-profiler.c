@@ -9,11 +9,13 @@
 #include <linux/cpuhotplug.h>
 #include <linux/completion.h>
 #include <linux/kthread.h>
+#include <linux/ems.h>
 
 #include <asm/perf_event.h>
 
 #include <soc/samsung/exynos-profiler.h>
 #include <soc/samsung/exynos-migov.h>
+#include <soc/samsung/exynos-dm.h>
 
 enum pmu_event_enum {
 	PMU_CCNTR,
@@ -58,6 +60,9 @@ struct cpu_profiler {
 	struct domain_profiler	*dom;
 
 	int			enabled;
+
+	struct task_struct	*init_task;	/* init task */
+	struct completion	init_done;	/* completion flag */
 
 	s32				cur_cstate;		/* this cpu cstate */
 	ktime_t				last_update_time;
@@ -104,12 +109,10 @@ struct domain_profiler {
 
 static struct profiler {
 	struct device_node	*root;
+	int			initialized;
 
 	struct list_head		list;	/* list for domain */
 	struct cpu_profiler __percpu	*cpus;	/* cpu data for all cpus */
-
-	struct work_struct	init_work;
-	struct mutex		mode_change_lock;
 
 	struct kobject		*kobj;
 } profiler;
@@ -190,7 +193,7 @@ void cpupro_get_power_change(s32 id, s32 freq_delta_ratio,
 	struct profile_result *result = &dompro->result[MIGOV];
 	struct freq_cstate_result *fc_result = &result->fc_result;
 	int cpus_cnt = cpumask_weight(&dompro->online_cpus);
-	int flag = (STATE_SCALE_WO_SPARE | STATE_SCALE_TIME);
+	int flag = (STATE_SCALE_WITH_SPARE | STATE_SCALE_TIME);
 
 	/* this domain is disabled */
 	if (unlikely(!cpus_cnt))
@@ -220,7 +223,9 @@ s32 cpupro_get_temp(s32 id)
 
 void cpupro_set_margin(s32 id, s32 margin)
 {
-	return;
+	struct domain_profiler *dompro = get_dom_by_migov_id(id);
+
+	esg_set_migov_boost(cpumask_first(&dompro->cpus), margin / 10);
 }
 
 void cpupro_set_dom_profile(struct domain_profiler *dompro, int enabled);
@@ -240,30 +245,10 @@ u32 cpupro_update_mode(s32 id, int mode)
 	return 0;
 }
 
-s32 cpupro_cpu_active_pct(s32 id, s32 *cpu_active_pct)
-{
-	struct domain_profiler *dompro = get_dom_by_migov_id(id);
-	int cpu, cnt = 0;
-
-	for_each_cpu(cpu, &dompro->cpus) {
-		struct cpu_profiler *cpupro = per_cpu_ptr(profiler.cpus, cpu);
-		struct freq_cstate_result *fc_result = &cpupro->result[MIGOV].fc_result;
-		cpu_active_pct[cnt++] = fc_result->ratio[ACTIVE];
-	}
-
-	return 0;
-};
-
-s32 cpupro_cpu_asv_ids(s32 id)
-{
-	struct domain_profiler *dompro = get_dom_by_migov_id(id);
-
-	return cal_asv_get_ids_info(dompro->cal_id);
-}
+u64 cpupro_get_stall_pct(s32 id) { return 0; };
 
 struct private_fn_cpu cpu_pd_fn = {
-	.cpu_active_pct		= &cpupro_cpu_active_pct,
-	.cpu_asv_ids		= &cpupro_cpu_asv_ids,
+	.get_stall_pct		= &cpupro_get_stall_pct,
 };
 
 struct domain_fn cpu_fn = {
@@ -283,6 +268,45 @@ struct domain_fn cpu_fn = {
 /************************************************************************
  *			Gathering CPUFreq Information			*
  ************************************************************************/
+#define ARMV8_PMU_CCNT_IDX 31
+static void cpupro_update_pmuevent(int cpu,
+	struct cpu_profiler *cpupro, int new_cstate, int freq_idx)
+{
+	struct pmu_profile *pmu = &cpupro->pmu;
+	int idx;
+
+	for (idx = 0; idx < NUM_OF_PMUEVENT; idx++) {
+		struct pmu_event *event = pmu->event[idx];
+		u64 delta = 0, cur_cnt0, cur_cnt1, cur_cnt;
+
+		if (!enabled_pmu_event(event))
+			continue;
+
+		if (cpupro->cur_cstate == PWR_OFF && new_cstate == -1)
+			continue;
+
+		if (new_cstate == ACTIVE)
+			event->last_cnt = 0;
+
+		cur_cnt0 = __raw_readl(event->info->va + event->info->id);
+		cur_cnt1 = __raw_readl((event->info->va + event->info->id + 0x8));
+		cur_cnt = cur_cnt0 + (cur_cnt1 << 32);
+		if (!event->last_cnt) {
+			event->last_cnt = cur_cnt;
+			continue;
+		}
+
+		if (cur_cnt < event->last_cnt) {
+			pr_info("cpu%d cur_cnt=%llu last_cnt=%llu cur_cstate=%d new_cstate=%d\n",
+				cpu, cur_cnt, event->last_cnt, cpupro->cur_cstate, new_cstate);
+		}
+
+		delta = cur_cnt - event->last_cnt;
+		event->last_cnt = cur_cnt;
+		event->cnt[freq_idx] += delta;
+	}
+}
+
 static void cpupro_update_time_in_freq(int cpu, int new_cstate, int new_freq_idx)
 {
 	struct cpu_profiler *cpupro = per_cpu_ptr(profiler.cpus, cpu);
@@ -300,6 +324,8 @@ static void cpupro_update_time_in_freq(int cpu, int new_cstate, int new_freq_idx
 
 	diff = ktime_sub(cur_time, cpupro->last_update_time);
 	fc->time[cpupro->cur_cstate][dompro->cur_freq_idx] += diff;
+
+	cpupro_update_pmuevent(cpu, cpupro, new_cstate, dompro->cur_freq_idx);
 
 	if (new_cstate > -1)
 		cpupro->cur_cstate = new_cstate;
@@ -353,50 +379,42 @@ void cpupro_make_domain_freq_cstate_result(struct domain_profiler *dompro, int u
 	fc_result->st_power = fc_result->st_power * cpus_cnt;
 }
 
-static void reset_cpu_data(struct domain_profiler *dompro, struct cpu_profiler *cpupro, int user)
+void cpupro_make_clkoff_active_table(struct freq_table *table, int size,
+					struct freq_cstate_result *fc_result,
+					struct pmu_event_result *pmu_result)
 {
-	struct freq_cstate *fc = &cpupro->fc;
-	struct freq_cstate_snapshot *fc_snap = &cpupro->fc_snap[user];
-	int idx, table_cnt = dompro->table_cnt;
+	int idx;
+#ifdef CONFIG_SOC_EXYNOS9830
+	/*
+	 * 9830 doesn't need to call this function,
+	 * because it can profile c0/c1/c2 from idle driver
+	 */
+	return;
+#endif
 
-	cpupro->cur_cstate = ACTIVE;
-	cpupro->last_update_time = ktime_get();
-
-	sync_fcsnap_with_cur(fc, fc_snap, table_cnt);
-
-	for (idx = 0; idx < NUM_OF_PMUEVENT; idx++) {
-		struct pmu_profile *pmu = &cpupro->pmu;
-		struct pmu_event *event = pmu->event[idx];
-		struct pmu_event_result *pmu_result = pmu->result[idx][user];
-
-		if (!event || !pmu_result)
-			continue;
-
-		sync_snap_with_cur(event->cnt, pmu_result->cnt_snap, table_cnt);
-		event->last_cnt = 0;
+	for (idx = 0; idx < size; idx++) {
+		ktime_t active_time, clkoff_time;
+		/* usec = cycle * 1000000 / freq (KHz) */
+		active_time = pmu_result->cnt_delta[idx] * 1000000 / table[idx].freq;
+		clkoff_time = fc_result->time[ACTIVE][idx] - active_time;
+		fc_result->time[CLK_OFF][idx] = max(clkoff_time, (ktime_t) 0);
+		fc_result->time[ACTIVE][idx] = (ktime_t) active_time;
 	}
 }
 
-static int init_work_cpu;
-static void cpupro_init_work(struct work_struct *work)
+void cpupro_set_cpu_profile(int cpu)
 {
-	int cpu = smp_processor_id();
 	struct cpu_profiler *cpupro = per_cpu_ptr(profiler.cpus, cpu);
 	struct domain_profiler *dompro = get_dom_by_cpu(cpu);
-
-	if (init_work_cpu != cpu)
-		pr_warn("WARNING: init_work is running on wrong cpu(%d->%d)",
-				init_work_cpu, cpu);
-
 
 	/* Enable profiler */
 	if (!dompro->enabled) {
 		/* update cstate for running cpus */
 		raw_spin_lock(&cpupro->lock);
-		reset_cpu_data(dompro, cpupro, MIGOV);
 		cpupro->enabled = true;
+		cpupro->cur_cstate = ACTIVE;
+		cpupro->last_update_time = ktime_get();
 		raw_spin_unlock(&cpupro->lock);
-
 		cpupro_update_time_in_freq(cpu, -1, -1);
 	} else {
 	/* Disable profiler */
@@ -412,37 +430,30 @@ void cpupro_set_dom_profile(struct domain_profiler *dompro, int enabled)
 	struct cpufreq_policy *policy;
 	int cpu;
 
-
-	mutex_lock(&profiler.mode_change_lock);
 	/* this domain is disabled */
-	if (!cpumask_weight(&dompro->online_cpus))
-		goto unlock;
+	if (!cpumask_weight(&dompro->cpus))
+		return;
 
 	policy = cpufreq_cpu_get(cpumask_first(&dompro->online_cpus));
-	if (!policy)
-		goto unlock;
-
-	/* update current freq idx */
-	dompro->cur_freq_idx = get_idx_from_freq(dompro->table, dompro->table_cnt,
-			policy->cur, RELATION_LOW);
-	cpufreq_cpu_put(policy);
+	if (policy) {
+		/* update current freq idx */
+		dompro->cur_freq_idx = get_idx_from_freq(dompro->table, dompro->table_cnt,
+				policy->cur, RELATION_LOW);
+		cpufreq_cpu_put(policy);
+	}
 
 	/* reset cpus of this domain */
-	for_each_cpu(cpu, &dompro->online_cpus) {
-		init_work_cpu = cpu;
-		schedule_work_on(cpu, &profiler.init_work);
-		flush_work(&profiler.init_work);
-	}
+	for_each_cpu(cpu, &dompro->cpus)
+		cpupro_set_cpu_profile(cpu);
+
 	dompro->enabled = enabled;
-unlock:
-	mutex_unlock(&profiler.mode_change_lock);
 }
 
 void cpupro_update_profile(struct domain_profiler *dompro, int user)
 {
 	struct profile_result *result = &dompro->result[user];
 	struct cpufreq_policy *policy;
-	int cpu;
+	int cpu, idx;
 
 	/* this domain profile is disabled */
 	if (unlikely(!dompro->enabled))
@@ -465,16 +476,32 @@ void cpupro_update_profile(struct domain_profiler *dompro, int user)
 		struct freq_cstate *fc = &cpupro->fc;
 		struct freq_cstate_snapshot *fc_snap = &cpupro->fc_snap[user];
 		struct freq_cstate_result *fc_result = &cpupro->result[user].fc_result;
+		struct pmu_profile *pmu = &cpupro->pmu;
 
 		cpupro_update_time_in_freq(cpu, -1, -1);
 
 		make_snapshot_and_time_delta(fc, fc_snap, fc_result, dompro->table_cnt);
 
+		for (idx = 0; idx < NUM_OF_PMUEVENT; idx++) {
+			struct pmu_event *event = pmu->event[idx];
+			struct pmu_event_result *pmu_result = pmu->result[idx][user];
+
+			if (!event)
+				continue;
+
+			make_snap_and_delta(event->cnt, pmu_result->cnt_snap,
+					pmu_result->cnt_delta, dompro->table_cnt);
+
+			if (idx == PMU_CCNTR)
+				cpupro_make_clkoff_active_table(dompro->table,
+					dompro->table_cnt, fc_result, pmu_result);
+		}
+
 		if (!fc_result->profile_time)
 			continue;
 
 		compute_freq_cstate_result(dompro->table, fc_result,
-			dompro->table_cnt, dompro->cur_freq_idx, result->avg_temp);
+				dompro->table_cnt, dompro->cur_freq_idx, result->avg_temp);
 	}
 
 	/* update domain */
@@ -496,8 +523,14 @@ static int cpupro_cpufreq_callback(struct notifier_block *nb,
 					unsigned long flag, void *data)
 {
 	struct cpufreq_freqs *freq = data;
-	struct domain_profiler *dompro = get_dom_by_cpu(freq->policy->cpu);
+	struct domain_profiler *dompro;
 	int cpu, new_freq_idx;
+
+#ifdef CONFIG_SOC_EXYNOS9830
+	dompro = get_dom_by_cpu(freq->cpu);
+#else
+	dompro = get_dom_by_cpu(freq->policy->cpu);
+#endif
 
 	if (!dompro->enabled)
 		return NOTIFY_OK;
@@ -505,8 +538,13 @@ static int cpupro_cpufreq_callback(struct notifier_block *nb,
 	if (flag != CPUFREQ_POSTCHANGE)
 		return NOTIFY_OK;
 
+#ifdef CONFIG_SOC_EXYNOS9830
+	if (freq->cpu != cpumask_first(&dompro->online_cpus))
+		return NOTIFY_OK;
+#else
 	if (freq->policy->cpu != cpumask_first(&dompro->online_cpus))
 		return NOTIFY_OK;
+#endif
 
 	/* update current freq */
 	new_freq_idx = get_idx_from_freq(dompro->table,
@@ -522,6 +560,42 @@ static struct notifier_block cpupro_cpufreq_notifier = {
 	.notifier_call  = cpupro_cpufreq_callback,
 };
 
+#ifdef CONFIG_SOC_EXYNOS9830
+void cpupro_pm_update(int cpu, int idx, int entry)
+{
+	struct cpu_profiler *cpupro = per_cpu_ptr(profiler.cpus, cpu);
+	int new_cstate;
+
+	if (unlikely(!profiler.initialized))
+		return;
+
+	if (!cpupro->enabled)
+		return;
+
+	if (entry)      /* enter power mode */
+		new_cstate = idx ? PWR_OFF : CLK_OFF;
+	else            /* wake-up */
+		new_cstate = ACTIVE;
+
+	cpupro_update_time_in_freq(cpu, new_cstate, -1);
+} EXPORT_SYMBOL(cpupro_pm_update);
+#else
+static void set_ccntr(void)
+{
+	u32 val;
+
+	/* Enable All Counters */
+	val = read_sysreg(pmcr_el0) | ARMV8_PMU_PMCR_E;
+	write_sysreg(val, pmcr_el0);
+
+	val = read_sysreg(pmcntenset_el0) | BIT(ARMV8_PMU_CCNT_IDX);
+	write_sysreg(val, pmcntenset_el0);
+}
+
+static void set_pmu_event(void)
+{
+	set_ccntr();
+}
 static int cpupro_pm_notifier(struct notifier_block *self,
 						unsigned long f, void *v)
 {
@@ -529,13 +603,17 @@ static int cpupro_pm_notifier(struct notifier_block *self,
 	struct cpu_profiler *cpupro = per_cpu_ptr(profiler.cpus, cpu);
 	int new_cstate;
 
-	if (f != CPU_PM_EXIT && f != CPU_PM_ENTER && f != CPU_PM_ENTER_FAILED)
+	if (f != CPU_PM_EXIT && f != CPU_PM_ENTER)
 		return NOTIFY_OK;
 
 	if (!cpupro->enabled)
 		return NOTIFY_OK;
 
-	new_cstate = (f == CPU_PM_ENTER) ? PWR_OFF : ACTIVE;
+	new_cstate = (f == CPU_PM_EXIT) ? ACTIVE : PWR_OFF;
+
+	/* when wake-up from C2, should set pmu */
+	if (f == CPU_PM_EXIT)
+		set_pmu_event();
 
 	cpupro_update_time_in_freq(cpu, new_cstate, -1);
 
@@ -545,6 +623,7 @@ static int cpupro_pm_notifier(struct notifier_block *self,
 static struct notifier_block cpupro_pm_nb = {
 	.notifier_call = cpupro_pm_notifier,
 };
+#endif
 
 static int cpupro_cpupm_online(unsigned int cpu)
 {
@@ -556,18 +635,7 @@ static int cpupro_cpupm_online(unsigned int cpu)
 static int cpupro_cpupm_offline(unsigned int cpu)
 {
 	struct domain_profiler *dompro = get_dom_by_cpu(cpu);
-	struct cpu_profiler *cpupro = per_cpu_ptr(profiler.cpus, cpu);
-
-	raw_spin_lock(&cpupro->lock);
-
 	cpumask_clear_cpu(cpu, &dompro->online_cpus);
-	cpupro->enabled = false;
-
-	raw_spin_unlock(&cpupro->lock);
-
-	if (!cpumask_weight(&dompro->online_cpus))
-		dompro->enabled = false;
-
 	return 0;
 }
 /************************************************************************
@@ -793,12 +861,14 @@ static int init_cpus_of_domain(struct domain_profiler *dompro)
 
 		/* init spin lock */
 		raw_spin_lock_init(&cpupro->lock);
+
+		/* init completion */
+		init_completion(&cpupro->init_done);
 	}
 
 	return 0;
 }
 
-#ifdef CONFIG_EXYNOS_DEBUG_INFO
 static void show_domain_info(struct domain_profiler *dompro)
 {
 	int idx;
@@ -833,7 +903,6 @@ static void show_domain_info(struct domain_profiler *dompro)
 		}
 	}
 }
-#endif
 
 static int exynos_cpu_profiler_probe(struct platform_device *pdev)
 {
@@ -877,31 +946,28 @@ static int exynos_cpu_profiler_probe(struct platform_device *pdev)
 						&cpu_fn, &cpu_pd_fn);
 	}
 
-	/* initialize work and completion for cpu initial setting */
-	INIT_WORK(&profiler.init_work, cpupro_init_work);
-	mutex_init(&profiler.mode_change_lock);
-
 	/* register cpufreq notifier */
 	cpufreq_register_notifier(&cpupro_cpufreq_notifier,
 				CPUFREQ_TRANSITION_NOTIFIER);
-
+#ifndef CONFIG_SOC_EXYNOS9830
 	/* register cpu pm notifier */
 	cpu_pm_register_notifier(&cpupro_pm_nb);
+#endif
 
 	/* register cpu hotplug notifier */
 	cpuhp_setup_state(CPUHP_BP_PREPARE_DYN,
-			"EXYNOS_MIGOV_CPU_POWER_UP_CONTROL",
+			"AP_EXYNOS_CPU_POWER_UP_CONTROL",
 			cpupro_cpupm_online, NULL);
 
 	cpuhp_setup_state(CPUHP_AP_ONLINE_DYN,
-			"EXYNOS_MIGOV_CPU_POWER_DOWN_CONTROL",
+			"AP_EXYNOS_CPU_POWER_DOWN_CONTROL",
 			NULL, cpupro_cpupm_offline);
 
-#ifdef CONFIG_EXYNOS_DEBUG_INFO
 	/* show domain information */
 	list_for_each_entry(dompro, &profiler.list, list)
 		show_domain_info(dompro);
-#endif
+
+	profiler.initialized = true;
 
 	return 0;
 }
@@ -929,5 +995,6 @@ static int exynos_cpu_profiler_init(void)
 }
 late_initcall(exynos_cpu_profiler_init);
 
+MODULE_SOFTDEP("pre: exynos-migov");
 MODULE_DESCRIPTION("Exynos CPU Profiler");
 MODULE_LICENSE("GPL");

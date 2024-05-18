@@ -1,5 +1,3 @@
-#include <soc/samsung/exynos-smc.h>
-
 #include "pmucal_cp.h"
 #include "pmucal_rae.h"
 
@@ -214,10 +212,10 @@ int pmucal_is_cp_smc_regs(struct pmucal_seq *seq) {
 
 void pmucal_smc_read(struct pmucal_seq *seq, int update)
 {
-	unsigned long reg = 0;
-	unsigned long cp_ctrl = 0;
-	unsigned long cp_ctrl_low = 0;
-	unsigned long cp_ctrl_high = 0;
+	u32 reg;
+	u32 cp_ctrl;
+	u32 cp_ctrl_low;
+	u32 cp_ctrl_high;
 
 	if (seq->offset == PMU_CP_CTRL_S_OFFSET) {
 		reg = CP_CTRL_S;
@@ -231,7 +229,7 @@ void pmucal_smc_read(struct pmucal_seq *seq, int update)
 	cp_ctrl = exynos_smc(SMC_ID, READ_CTRL, 0, reg);
 	if (!(cp_ctrl & 0xffff)) {
 		cp_ctrl >>= 16;
-		cp_ctrl_low = cp_ctrl & 0xffff;
+		cp_ctrl_low = cp_ctrl;
 	} else {
 		pr_err("%s%s: ERR! read Fail: %d\n", PMUCAL_PREFIX, __func__, cp_ctrl & 0xffff);
 		return;
@@ -240,7 +238,7 @@ void pmucal_smc_read(struct pmucal_seq *seq, int update)
 	cp_ctrl = exynos_smc(SMC_ID, READ_CTRL, 1, reg);
 	if (!(cp_ctrl & 0xffff)) {
 		cp_ctrl >>= 16;
-		cp_ctrl_high = cp_ctrl & 0xffff;
+		cp_ctrl_high = cp_ctrl;
 	} else {
 		pr_err("%s%s: ERR! read Fail: %d\n", PMUCAL_PREFIX, __func__, cp_ctrl & 0xffff);
 		return;
@@ -255,11 +253,11 @@ void pmucal_smc_read(struct pmucal_seq *seq, int update)
 
 void pmucal_smc_write(struct pmucal_seq *seq)
 {
-	unsigned long ret = 0;
-	unsigned long reg = 0;
-	unsigned long cp_ctrl = 0;
-	unsigned long cp_ctrl_low = 0;
-	unsigned long cp_ctrl_high = 0;
+	u32 reg;
+	int ret = 0;
+	u32 cp_ctrl;
+	u32 cp_ctrl_low;
+	u32 cp_ctrl_high;
 
 	if (seq->offset == PMU_CP_CTRL_S_OFFSET) {
 		reg = CP_CTRL_S;
@@ -273,14 +271,14 @@ void pmucal_smc_write(struct pmucal_seq *seq)
 	if (seq->mask == U32_MAX) {
 		ret = exynos_smc(SMC_ID, WRITE_CTRL, seq->value, reg);
 		if (ret > 0) {
-			pr_err("%s%s: ERR! CP_CTRL Write Fail: %ld\n", PMUCAL_PREFIX, __func__, ret);
+			pr_err("%s%s: ERR! CP_CTRL Write Fail: %d\n", PMUCAL_PREFIX, __func__, ret);
 			return;
 		}
 	} else {
 		cp_ctrl = exynos_smc(SMC_ID, READ_CTRL, 0, reg);
 		if (!(cp_ctrl & 0xffff)) {
 			cp_ctrl >>= 16;
-			cp_ctrl_low = cp_ctrl & 0xffff;
+			cp_ctrl_low = cp_ctrl;
 		} else {
 			pr_err("%s%s: ERR! read Fail: %d\n", PMUCAL_PREFIX, __func__, cp_ctrl & 0xffff);
 			return;
@@ -289,7 +287,7 @@ void pmucal_smc_write(struct pmucal_seq *seq)
 		cp_ctrl = exynos_smc(SMC_ID, READ_CTRL, 1, reg);
 		if (!(cp_ctrl & 0xffff)) {
 			cp_ctrl >>= 16;
-			cp_ctrl_high = cp_ctrl & 0xffff;
+			cp_ctrl_high = cp_ctrl;
 		} else {
 			pr_err("%s%s: ERR! read Fail: %d\n", PMUCAL_PREFIX, __func__, cp_ctrl & 0xffff);
 			return;
@@ -299,7 +297,7 @@ void pmucal_smc_write(struct pmucal_seq *seq)
 
 		ret = exynos_smc(SMC_ID, WRITE_CTRL, seq->value, reg);
 		if (ret > 0) {
-			pr_err("%s%s: ERR! CP_CTRL Write Fail: %ld\n", PMUCAL_PREFIX, __func__, ret);
+			pr_err("%s%s: ERR! CP_CTRL Write Fail: %d\n", PMUCAL_PREFIX, __func__, ret);
 			return;
 		}
 	}
@@ -398,7 +396,7 @@ int pmucal_cp_reset_req_clear(void)
  *
  *  Returns 0 on success. Otherwise, negative error code.
  */
-int pmucal_cp_initialize(void)
+int __init pmucal_cp_initialize(void)
 {
 	int ret = 0;
 	pr_info("%s%s()\n", PMUCAL_PREFIX, __func__);

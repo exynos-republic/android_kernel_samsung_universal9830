@@ -277,9 +277,9 @@ int (*wa_set_cmuewf)(unsigned int index, unsigned int en, void *cmu_cmu, int *ew
 
 int exynos9820_cal_check_hiu_dvfs_id(u32 id)
 {
-//	if ((IS_ENABLED(CONFIG_EXYNOS_PSTATE_HAFM) || IS_ENABLED(CONFIG_EXYNOS_PSTATE_HAFM_TB)) && id == dvfs_cpucl2)
-//		return 1;
-//	else
+	if ((IS_ENABLED(CONFIG_EXYNOS_PSTATE_HAFM) || IS_ENABLED(CONFIG_EXYNOS_PSTATE_HAFM_TB)) && id == dvfs_cpucl2)
+		return 1;
+	else
 		return 0;
 }
 int (*cal_check_hiu_dvfs_id)(u32 id) = exynos9820_cal_check_hiu_dvfs_id;
@@ -321,4 +321,3 @@ void exynos9820_set_cmu_smpl_warn(void)
 	pr_info("G3D SMPL_WARN enabled.\n");
 }
 void (*cal_set_cmu_smpl_warn)(void) = exynos9820_set_cmu_smpl_warn;
-EXPORT_SYMBOL(cal_set_cmu_smpl_warn);

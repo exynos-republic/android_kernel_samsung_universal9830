@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2019, Samsung Electronics.
  *
@@ -36,9 +35,9 @@ struct cp_btl {
 	bool enabled;
 	atomic_t active;
 
-	u32 link_type;
+	u32 link_type; /* enum modem_link */
 	struct cp_btl_mem_region mem;
-#if IS_ENABLED(CONFIG_LINK_DEVICE_PCIE)
+#ifdef CONFIG_LINK_DEVICE_PCIE
 	int last_pcie_atu_grp;
 #endif
 
@@ -46,7 +45,7 @@ struct cp_btl {
 	struct miscdevice miscdev;
 };
 
-#if IS_ENABLED(CONFIG_CP_BTL)
+#if defined(CONFIG_CP_BTL)
 extern int cp_btl_create(struct cp_btl *btl, struct device *dev);
 extern int cp_btl_destroy(struct cp_btl *btl);
 #else

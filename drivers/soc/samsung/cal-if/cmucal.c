@@ -1,5 +1,4 @@
 #include <linux/string.h>
-#include <linux/module.h>
 #include "cmucal.h"
 
 #define get_node(list, idx)		(GET_IDX(list[idx].id) == idx ? \
@@ -127,7 +126,7 @@ void *cmucal_get_node(unsigned int id)
 }
 EXPORT_SYMBOL_GPL(cmucal_get_node);
 
-void * cmucal_get_sfr_node(unsigned int id)
+void * __init cmucal_get_sfr_node(unsigned int id)
 {
 	unsigned int type = GET_TYPE(id);
 	unsigned short idx = GET_IDX(id);
@@ -261,5 +260,3 @@ unsigned int cmucal_get_id_by_addr(unsigned int addr)
 	return id;
 }
 EXPORT_SYMBOL_GPL(cmucal_get_id_by_addr);
-
-MODULE_LICENSE("GPL");

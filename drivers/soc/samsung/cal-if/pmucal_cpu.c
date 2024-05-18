@@ -158,7 +158,6 @@ int pmucal_cpu_cluster_enable(unsigned int cluster)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(pmucal_cpu_cluster_enable);
 
 /**
  *  pmucal_cpu_cluster_disable - disables a cluster.
@@ -266,7 +265,7 @@ int pmucal_cpu_cluster_req_emulation(unsigned int cluster, bool en)
  *
  *  Returns 0 on success. Otherwise, negative error code.
  */
-int pmucal_cpu_init(void)
+int __init pmucal_cpu_init(void)
 {
 	int ret = 0, i;
 

@@ -1,14 +1,11 @@
 #include "pwrcal-env.h"
 #include "pmucal_common.h"
 #include "pmucal_rae.h"
-#include "asv.h"
 
 /**
  * A global index for pmucal_rae_handle_seq.
  * it should be helpful in ramdump.
  */
-unsigned int evt_main;
-unsigned int evt_sub;
 static unsigned int pmucal_rae_seq_idx;
 
 /**
@@ -68,7 +65,7 @@ int pmucal_rae_phy2virt(struct pmucal_seq *seq, unsigned int seq_size)
 static inline bool pmucal_rae_check_condition(struct pmucal_seq *seq)
 {
 	u32 reg;
-	reg = __raw_readl(seq->cond_base_va + seq->cond_offset);
+	reg = readl(seq->cond_base_va + seq->cond_offset);
 	reg &= seq->cond_mask;
 	if (reg == seq->cond_value)
 		return true;
@@ -79,7 +76,7 @@ static inline bool pmucal_rae_check_condition(struct pmucal_seq *seq)
 static inline bool pmucal_rae_check_condition_inv(struct pmucal_seq *seq)
 {
 	u32 reg;
-	reg = __raw_readl(seq->cond_base_va + seq->cond_offset);
+	reg = readl(seq->cond_base_va + seq->cond_offset);
 	reg &= seq->cond_mask;
 	if (reg == seq->cond_value)
 		return false;
@@ -92,9 +89,9 @@ static inline bool pmucal_rae_check_value(struct pmucal_seq *seq)
 	u32 reg;
 
 	if (seq->access_type == PMUCAL_WRITE_WAIT)
-		reg = __raw_readl(seq->base_va + seq->offset + 0x4);
+		reg = readl(seq->base_va + seq->offset + 0x4);
 	else
-		reg = __raw_readl(seq->base_va + seq->offset);
+		reg = readl(seq->base_va + seq->offset);
 	reg &= seq->mask;
 	if (reg == seq->value)
 		return true;
@@ -115,9 +112,9 @@ static int pmucal_rae_wait(struct pmucal_seq *seq, unsigned int idx)
 			break;
 		timeout++;
 		udelay(1);
-		if (timeout > 200000) {
+		if (timeout > 2000) {
 			u32 reg;
-			reg = __raw_readl(seq->base_va + seq->offset);
+			reg = readl(seq->base_va + seq->offset);
 			pr_err("%s %s:timed out during wait. reg:%s (value:0x%x, seq_idx = %d)\n",
 						PMUCAL_PREFIX, __func__, seq->sfr_name, reg, idx);
 			return -ETIMEDOUT;
@@ -130,58 +127,20 @@ static int pmucal_rae_wait(struct pmucal_seq *seq, unsigned int idx)
 static inline void pmucal_rae_read(struct pmucal_seq *seq)
 {
 	u32 reg;
-#ifdef CONFIG_SOC_EXYNOS2100
-	unsigned long tmp;
-	if (seq->base_pa == 0x19C20000) {
-		exynos_smc_readsfr((unsigned long)(seq->base_pa + seq->offset), &tmp);
-		reg = (u32)tmp;
-	} else {
-		reg = __raw_readl(seq->base_va + seq->offset);
-	}
-#else
-	reg = __raw_readl(seq->base_va + seq->offset);
-#endif
+	reg = readl(seq->base_va + seq->offset);
 	seq->value = (reg & seq->mask);
 }
 
 static inline void pmucal_rae_write(struct pmucal_seq *seq)
 {
-#ifdef CONFIG_SOC_EXYNOS2100
-	if (seq->base_pa == 0x19C20000) {
-		if (seq->mask == U32_MAX) {
-			exynos_smc(SMC_CMD_REG, SMC_REG_ID_SFR_W(
-				(unsigned long)(seq->base_pa + seq->offset)),
-				(unsigned long)seq->value, 0);
-		} else {
-			u32 reg;
-			unsigned long tmp;
-
-			exynos_smc_readsfr((unsigned long)(seq->base_pa + seq->offset), &tmp);
-			reg = (u32)tmp;
-			reg = (reg & ~seq->mask) | (seq->value & seq->mask);
-			exynos_smc(SMC_CMD_REG, (unsigned long)(seq->base_pa + seq->offset),
-					(unsigned long)reg, 0);
-		}
-	} else {
-		if (seq->mask == U32_MAX)
-			__raw_writel(seq->value, seq->base_va + seq->offset);
-		else {
-			u32 reg;
-			reg = __raw_readl(seq->base_va + seq->offset);
-			reg = (reg & ~seq->mask) | (seq->value & seq->mask);
-			__raw_writel(reg, seq->base_va + seq->offset);
-		}
-	}
-#else
 	if (seq->mask == U32_MAX)
-		__raw_writel(seq->value, seq->base_va + seq->offset);
+		writel(seq->value, seq->base_va + seq->offset);
 	else {
 		u32 reg;
-		reg = __raw_readl(seq->base_va + seq->offset);
+		reg = readl(seq->base_va + seq->offset);
 		reg = (reg & ~seq->mask) | (seq->value & seq->mask);
-		__raw_writel(reg, seq->base_va + seq->offset);
+		writel(reg, seq->base_va + seq->offset);
 	}
-#endif
 }
 
 /* Atomic operation for PMU_ALIVE registers. (offset 0~0x3FFF)
@@ -192,7 +151,7 @@ static inline void pmucal_set_bit_atomic(struct pmucal_seq *seq)
 	if (seq->offset > 0x3fff)
 		return ;
 
-	__raw_writel(seq->value, seq->base_va + (seq->offset | 0xc000));
+	writel(seq->value, seq->base_va + (seq->offset | 0xc000));
 }
 
 static inline void pmucal_clr_bit_atomic(struct pmucal_seq *seq)
@@ -200,7 +159,7 @@ static inline void pmucal_clr_bit_atomic(struct pmucal_seq *seq)
 	if (seq->offset > 0x3fff)
 		return ;
 
-	__raw_writel(seq->value, seq->base_va + (seq->offset | 0x8000));
+	writel(seq->value, seq->base_va + (seq->offset | 0x8000));
 }
 
 static int pmucal_rae_write_retry(struct pmucal_seq *seq, bool inversion, unsigned int idx)
@@ -226,7 +185,7 @@ static int pmucal_rae_write_retry(struct pmucal_seq *seq, bool inversion, unsign
 		udelay(1);
 		if (timeout > 1000) {
 			u32 reg;
-			reg = __raw_readl(seq->cond_base_va + seq->cond_offset);
+			reg = readl(seq->cond_base_va + seq->cond_offset);
 			pr_err("%s %s:timed out during write-retry. (value:0x%x, seq_idx = %d)\n",
 					PMUCAL_PREFIX, __func__, reg, idx);
 			return -ETIMEDOUT;
@@ -240,8 +199,8 @@ static inline void pmucal_clr_pend(struct pmucal_seq *seq)
 {
 	u32 reg;
 
-	reg = __raw_readl(seq->cond_base_va + seq->cond_offset) & seq->cond_mask;
-	__raw_writel(reg & seq->mask, seq->base_va + seq->offset);
+	reg = readl(seq->cond_base_va + seq->cond_offset) & seq->cond_mask;
+	writel(reg & seq->mask, seq->base_va + seq->offset);
 }
 
 void pmucal_rae_save_seq(struct pmucal_seq *seq, unsigned int seq_size)
@@ -272,18 +231,6 @@ void pmucal_rae_save_seq(struct pmucal_seq *seq, unsigned int seq_size)
 			break;
 		case PMUCAL_CLEAR_PEND:
 			pmucal_clr_pend(&seq[i]);
-			break;
-		case PMUCAL_READ_EVT10:
-			if (evt_sub == 0) {
-				pmucal_rae_read(&seq[i]);
-				seq[i].need_restore = false;
-			}
-			break;
-		case PMUCAL_READ_EVT11:
-			if (evt_sub > 0) {
-				pmucal_rae_read(&seq[i]);
-				seq[i].need_restore = false;
-			}
 			break;
 		default:
 			break;
@@ -345,14 +292,6 @@ int pmucal_rae_restore_seq(struct pmucal_seq *seq, unsigned int seq_size)
 			break;
 		case PMUCAL_CLEAR_PEND:
 			pmucal_clr_pend(&seq[i]);
-			break;
-		case PMUCAL_WRITE_EVT10:
-			if (evt_sub == 0)
-				pmucal_rae_write(&seq[i]);
-			break;
-		case PMUCAL_WRITE_EVT11:
-			if (evt_sub > 0)
-				pmucal_rae_write(&seq[i]);
 			break;
 		default:
 			break;
@@ -427,26 +366,8 @@ int pmucal_rae_handle_seq(struct pmucal_seq *seq, unsigned int seq_size)
 		case PMUCAL_CLR_BIT_ATOMIC:
 			pmucal_clr_bit_atomic(&seq[i]);
 			break;
-		case PMUCAL_COND_WRITE_RETRY:
-		case PMUCAL_COND_WRITE_RETRY_INV:
 		case PMUCAL_CLEAR_PEND:
 			pmucal_clr_pend(&seq[i]);
-			break;
-		case PMUCAL_WRITE_EVT10:
-			if (evt_sub == 0)
-				pmucal_rae_write(&seq[i]);
-			break;
-		case PMUCAL_WRITE_EVT11:
-			if (evt_sub > 0)
-				pmucal_rae_write(&seq[i]);
-			break;
-		case PMUCAL_READ_EVT10:
-			if (evt_sub == 0)
-				pmucal_rae_read(&seq[i]);
-			break;
-		case PMUCAL_READ_EVT11:
-			if (evt_sub > 0)
-				pmucal_rae_read(&seq[i]);
 			break;
 		default:
 			pr_err("%s %s:invalid PMUCAL access type\n", PMUCAL_PREFIX, __func__);
@@ -467,7 +388,7 @@ int pmucal_rae_handle_seq(struct pmucal_seq *seq, unsigned int seq_size)
  *  Returns 0 on success. Otherwise, negative error code.
  */
 
-#if IS_ENABLED(CONFIG_CP_PMUCAL)
+#ifdef CONFIG_CP_PMUCAL
 static unsigned int pmucal_rae_cp_seq_idx;
 int pmucal_rae_handle_cp_seq(struct pmucal_seq *seq, unsigned int seq_size)
 {
@@ -483,7 +404,7 @@ int pmucal_rae_handle_cp_seq(struct pmucal_seq *seq, unsigned int seq_size)
 			else {
 				pmucal_rae_read(&seq[i]);
 				pr_info("%s%s\t%s = 0x%08x\n", PMUCAL_PREFIX, "raw_read", seq[i].sfr_name,
-						__raw_readl(seq[i].base_va + seq[i].offset));
+						readl(seq[i].base_va + seq[i].offset));
 			}
 			break;
 		case PMUCAL_WRITE:
@@ -491,12 +412,12 @@ int pmucal_rae_handle_cp_seq(struct pmucal_seq *seq, unsigned int seq_size)
 				pmucal_smc_write(&seq[i]);
 			else {
 				u32 reg;
-				reg = __raw_readl(seq[i].base_va + seq[i].offset);
+				reg = readl(seq[i].base_va + seq[i].offset);
 				reg = (reg & ~seq[i].mask) | seq[i].value;
 				pr_info("%s%s\t%s = 0x%08x\n", PMUCAL_PREFIX, "raw_write", seq[i].sfr_name, reg);
 				pmucal_rae_write(&seq[i]);
 				pr_info("%s%s\t%s = 0x%08x\n", PMUCAL_PREFIX, "raw_read", seq[i].sfr_name,
-						__raw_readl(seq[i].base_va + seq[i].offset));
+						readl(seq[i].base_va + seq[i].offset));
 			}
 			break;
 		case PMUCAL_COND_READ:
@@ -513,7 +434,7 @@ int pmucal_rae_handle_cp_seq(struct pmucal_seq *seq, unsigned int seq_size)
 			if (ret)
 				return ret;
 			pr_info("%s%s\t%s = 0x%08x(expected = 0x%08x)\n", PMUCAL_PREFIX, "raw_read", seq[i].sfr_name,
-					__raw_readl(seq[i].base_va + seq[i].offset) & seq[i].mask, seq[i].value);
+					readl(seq[i].base_va + seq[i].offset) & seq[i].mask, seq[i].value);
 			break;
 		case PMUCAL_DELAY:
 			udelay(seq[i].value);
@@ -534,7 +455,7 @@ int pmucal_rae_handle_cp_seq(struct pmucal_seq *seq, unsigned int seq_size)
  *
  *  Returns 0 on success. Otherwise, negative error code.
  */
-int pmucal_rae_init(void)
+int __init pmucal_rae_init(void)
 {
 	int i;
 
@@ -555,8 +476,6 @@ int pmucal_rae_init(void)
 		pmucal_p2v_list[i].va = (void *)(pmucal_p2v_list[i].pa);
 #endif
 	}
-
-	id_get_rev(&evt_main, &evt_sub);
 
 	return 0;
 }

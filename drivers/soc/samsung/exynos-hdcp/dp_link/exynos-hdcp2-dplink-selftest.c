@@ -11,16 +11,14 @@
 
 #include <linux/kernel.h>
 #include <linux/slab.h>
-#include <linux/module.h>
 #include <asm/cacheflush.h>
 
-#include "../exynos-hdcp2.h"
 #include "../exynos-hdcp2-config.h"
 #include "../exynos-hdcp2-protocol-msg.h"
 #include "../exynos-hdcp2-misc.h"
 #include "../exynos-hdcp2-encrypt.h"
+#include "../exynos-hdcp2.h"
 #include "../exynos-hdcp2-log.h"
-#include "../exynos-hdcp2-testvector.h"
 #include "exynos-hdcp2-dplink-protocol-msg.h"
 
 #define DP_AKE_INIT_LEN			11
@@ -34,6 +32,12 @@ extern uint8_t msg_rx_send_h_prime_v22[32];
 extern uint8_t msg_rx_send_pairing_info_v22[16];
 extern uint8_t msg_rx_send_cert_v22[533];
 extern unsigned char cert_v22[522];
+extern uint8_t tv_emkey_v22[128];
+extern uint8_t tv_ske_eskey_v22[16];
+extern uint8_t tv_rcvid_list_v22[36];
+extern uint8_t tv_rpauth_v_v22[16];
+extern uint8_t tv_rpauth_stream_manage_v22[7];
+extern uint8_t tv_rpauth_stream_ready_v22[32];
 
 static struct hdcp_tx_ctx g_tx_ctx;
 static struct hdcp_rx_ctx g_rx_ctx;
@@ -464,5 +468,3 @@ int dp_hdcp_protocol_self_test(void)
 
 	return 0;
 }
-
-MODULE_LICENSE("GPL");

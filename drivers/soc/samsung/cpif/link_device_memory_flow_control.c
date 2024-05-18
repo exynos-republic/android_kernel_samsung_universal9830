@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2011 Samsung Electronics.
  *
@@ -22,6 +21,7 @@
 #include <linux/delay.h>
 #include <linux/wait.h>
 #include <linux/sched.h>
+#include <linux/wakelock.h>
 #include <linux/vmalloc.h>
 #include <linux/netdevice.h>
 
@@ -29,95 +29,7 @@
 #include "modem_utils.h"
 #include "link_device_memory.h"
 
-#if IS_ENABLED(CONFIG_CP_PKTPROC_UL)
-void pktproc_ul_q_stop(struct pktproc_queue_ul *q)
-{
-	if (atomic_read(&q->busy) == 0) {
-		struct link_device *ld = &(q->mld->link_dev);
-
-		if (!test_bit(TXQ_STOP_MASK, &ld->tx_flowctrl_mask)) {
-			unsigned long flags;
-
-			spin_lock_irqsave(&q->lock, flags);
-
-			atomic_set(&q->busy, 1);
-			set_bit(TXQ_STOP_MASK, &ld->tx_flowctrl_mask);
-			stop_net_ifaces(ld);
-
-			spin_unlock_irqrestore(&q->lock, flags);
-
-			/* Currently,
-			 * CP is not doing anything when CP receive req_ack
-			 * command from AP. So, we'll skip this scheme.
-			 */
-			/* send_req_ack(mld, dev); */
-			mif_err_limited("PKTPROC UL QUEUE %d tx_flowctrl=0x%04lx\n",
-				q->q_idx, ld->tx_flowctrl_mask);
-		}
-	}
-}
-
-void pktproc_ul_q_start(struct pktproc_queue_ul *q)
-{
-	if (atomic_read(&q->busy) > 0) {
-		struct link_device *ld = &q->mld->link_dev;
-
-		if (test_bit(TXQ_STOP_MASK, &ld->tx_flowctrl_mask)) {
-			unsigned long flags;
-
-			spin_lock_irqsave(&q->lock, flags);
-
-			atomic_set(&q->busy, 0);
-			clear_bit(TXQ_STOP_MASK, &ld->tx_flowctrl_mask);
-
-			if (ld->tx_flowctrl_mask == 0) {
-				resume_net_ifaces(ld);
-				mif_err_limited("PKTPROC UL QUEUE %d,\n"
-						"tx_flowctrl=0x%04lx\n",
-					q->q_idx, ld->tx_flowctrl_mask);
-			}
-
-			spin_unlock_irqrestore(&q->lock, flags);
-		}
-	}
-}
-
-int pktproc_under_ul_flow_ctrl(struct pktproc_queue_ul *q)
-{
-	return atomic_read(&q->busy);
-}
-
-int pktproc_check_ul_flow_ctrl(struct pktproc_queue_ul *q)
-{
-	struct link_device *ld = &q->mld->link_dev;
-	struct modem_ctl *mc = ld->mc;
-	int busy_count = atomic_read(&q->busy);
-	unsigned long flags;
-
-	spin_lock_irqsave(&q->lock, flags);
-	if (pktproc_ul_q_empty(q->q_info)) {
-		spin_unlock_irqrestore(&q->lock, flags);
-#ifdef DEBUG_MODEM_IF_FLOW_CTRL
-		if (cp_online(mc)) {
-			mif_err("PKTPROC UL Queue %d: No RES_ACK,\n"
-					"but EMPTY (busy_cnt %d)\n",
-				q->q_idx, busy_count);
-		}
-#endif
-		pktproc_ul_q_start(q);
-		return 0;
-	}
-
-	spin_unlock_irqrestore(&q->lock, flags);
-
-	atomic_inc(&q->busy);
-
-	if (cp_online(mc) && count_flood(busy_count, BUSY_COUNT_MASK))
-		return -ETIME;
-
-	return -EBUSY;
-}
-#endif /* CONFIG_CP_PKTPROC_UL */
+#ifdef GROUP_MEM_FLOW_CONTROL
 
 void sbd_txq_stop(struct sbd_ring_buffer *rb)
 {
@@ -208,13 +120,12 @@ int sbd_check_tx_flow_ctrl(struct sbd_ring_buffer *rb)
 
 void txq_stop(struct mem_link_device *mld, struct legacy_ipc_device *dev)
 {
-#if IS_ENABLED(CONFIG_MODEM_IF_LEGACY_QOS)
+#ifdef CONFIG_MODEM_IF_LEGACY_QOS
 	if (dev->id == IPC_MAP_HPRIO_RAW && atomic_read(&dev->txq.busy) == 0) {
 #else
 	if (dev->id == IPC_MAP_NORM_RAW && atomic_read(&dev->txq.busy) == 0) {
 #endif
 		struct link_device *ld = &mld->link_dev;
-
 		if (!test_bit(TXQ_STOP_MASK, &ld->tx_flowctrl_mask)) {
 			unsigned long flags;
 
@@ -239,7 +150,7 @@ void tx_flowctrl_suspend(struct mem_link_device *mld)
 
 	if (!test_bit(TX_SUSPEND_MASK, &ld->tx_flowctrl_mask)) {
 		unsigned long flags;
-#if IS_ENABLED(CONFIG_MODEM_IF_LEGACY_QOS)
+#ifdef CONFIG_MODEM_IF_LEGACY_QOS
 		struct legacy_ipc_device *dev = mld->legacy_link_dev.dev[IPC_MAP_HPRIO_RAW];
 #else
 		struct legacy_ipc_device *dev = mld->legacy_link_dev.dev[IPC_MAP_NORM_RAW];
@@ -259,13 +170,12 @@ void tx_flowctrl_suspend(struct mem_link_device *mld)
 
 void txq_start(struct mem_link_device *mld, struct legacy_ipc_device *dev)
 {
-#if IS_ENABLED(CONFIG_MODEM_IF_LEGACY_QOS)
+#ifdef CONFIG_MODEM_IF_LEGACY_QOS
 	if (dev->id == IPC_MAP_HPRIO_RAW && atomic_read(&dev->txq.busy) > 0) {
 #else
 	if (dev->id == IPC_MAP_NORM_RAW && atomic_read(&dev->txq.busy) > 0) {
 #endif
 		struct link_device *ld = &mld->link_dev;
-
 		if (test_bit(TXQ_STOP_MASK, &ld->tx_flowctrl_mask)) {
 			unsigned long flags;
 
@@ -291,7 +201,7 @@ void tx_flowctrl_resume(struct mem_link_device *mld)
 
 	if (test_bit(TX_SUSPEND_MASK, &ld->tx_flowctrl_mask)) {
 		unsigned long flags;
-#if IS_ENABLED(CONFIG_MODEM_IF_LEGACY_QOS)
+#ifdef CONFIG_MODEM_IF_LEGACY_QOS
 		struct legacy_ipc_device *dev = mld->legacy_link_dev.dev[IPC_MAP_HPRIO_RAW];
 #else
 		struct legacy_ipc_device *dev = mld->legacy_link_dev.dev[IPC_MAP_NORM_RAW];
@@ -400,3 +310,5 @@ void send_res_ack(struct mem_link_device *mld, struct legacy_ipc_device *dev)
 	msb_free(msb);
 #endif
 }
+
+#endif

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2010 Samsung Electronics.
  *
@@ -38,18 +37,17 @@
 
 #include "modem_prj.h"
 #include "modem_utils.h"
+#include "include/link_device_memory_config.h"
 #include "include/circ_queue.h"
 #include "include/sbd.h"
 #include "include/sipc5.h"
 #include "include/legacy.h"
 #include "link_rx_pktproc.h"
-#if IS_ENABLED(CONFIG_CP_PKTPROC_UL)
-#include "link_tx_pktproc.h"
-#endif
 #include "boot_device_spi.h"
 #include "cpif_tp_monitor.h"
 
-/*============================================================================*/
+#ifdef GROUP_MEM_TYPE
+
 enum mem_iface_type {
 	MEM_EXT_DPRAM = 0x0001,	/* External DPRAM */
 	MEM_AP_IDPRAM = 0x0002,	/* DPRAM in AP    */
@@ -63,7 +61,10 @@ enum mem_iface_type {
 #define MEM_DPRAM_TYPE_MASK	0x00FF
 #define MEM_SHMEM_TYPE_MASK	0xFF00
 
-/*============================================================================*/
+#endif
+
+#ifdef GROUP_MEM_LINK_INTERRUPT
+
 #define MASK_INT_VALID		0x0080
 #define MASK_TX_FLOWCTL_SUSPEND	0x0010
 #define MASK_TX_FLOWCTL_RESUME	0x0000
@@ -95,9 +96,11 @@ enum mem_iface_type {
 #define CMD_SILENT_NV_REBUILD	0x000E
 #define CMD_NORMAL_POWER_OFF	0x000F
 
+#endif
+
 #define DATALLOC_PERIOD_MS		2	/* 2 ms */
 
-/*============================================================================*/
+#ifdef GROUP_MEM_FLOW_CONTROL
 #define MAX_SKB_TXQ_DEPTH		1024
 #define TX_PERIOD_MS			1	/* 1 ms */
 #define MAX_TX_BUSY_COUNT		1024
@@ -108,23 +111,16 @@ enum mem_iface_type {
 #define TXQ_STOP_MASK			(0x1<<0)
 #define TX_SUSPEND_MASK			(0x1<<1)
 #define SHM_FLOWCTL_BIT			BIT(2)
-
-/*============================================================================*/
-#define FORCE_CRASH_ACK_TIMEOUT		(5 * HZ)
-
-/*============================================================================*/
-#define SHMEM_SRINFO_DATA_STR	64
-
-#if !IS_ENABLED(CONFIG_SBD_BOOTLOG)
-#define SHMEM_BOOTLOG_BASE		0xC00
-#define SHMEM_BOOTLOG_BUFF		0x1FF
-#define SHMEM_BOOTLOG_OFFSET		0x4
-#else
-#define SHMEM_BOOTSBDLOG_SIZE		0x1000 // 4KB
-#define SHMEM_BOOTSBDLOG_MAIN_BASE	0x400
 #endif
 
-/*============================================================================*/
+#ifdef GROUP_MEM_CP_CRASH
+
+#define FORCE_CRASH_ACK_TIMEOUT		(5 * HZ)
+
+#endif
+
+#ifdef GROUP_MEM_LINK_SNAPSHOT
+
 struct __packed mem_snapshot {
 	/* Timestamp */
 	struct timespec ts;
@@ -160,7 +156,10 @@ struct mst_buff_head {
 	spinlock_t lock;
 };
 
-/*============================================================================*/
+#endif
+
+#ifdef GROUP_MEM_LINK_DEVICE
+
 enum mem_ipc_mode {
 	MEM_LEGACY_IPC,
 	MEM_SBD_IPC,
@@ -170,8 +169,6 @@ enum mem_ipc_mode {
 
 struct freq_table {
 	int num_of_table;
-	u32 use_dfs_max_freq;
-	u32 cal_id_mif;
 	u32 freq[FREQ_MAX_LV];
 };
 
@@ -181,6 +178,14 @@ struct ctrl_msg {
 		u32 sr_num;
 		u32 __iomem *addr;
 	};
+};
+
+enum control_msg_type {
+	MAILBOX_SR = 1,
+	DRAM_V1,
+	DRAM_V2,
+	GPIO,
+	CONTROL_MSG_INTERFACE_MAX
 };
 
 struct mem_link_device {
@@ -280,26 +285,7 @@ struct mem_link_device {
 	unsigned int irq_cp2ap_status;	/* INTR# for TX FLOWCTL */
 	unsigned int tx_flowctrl_cmd;
 
-	struct wakeup_source *ws;
-
-#if IS_ENABLED(CONFIG_CP_LLC)
-	/* llc_status */
-	unsigned int int_ap2cp_llc_status;
-	unsigned int irq_cp2ap_llc_status;
-
-	unsigned int sbi_ap_llc_way_mask;
-	unsigned int sbi_ap_llc_way_pos;
-	unsigned int sbi_ap_llc_alloc_mask;
-	unsigned int sbi_ap_llc_alloc_pos;
-	unsigned int sbi_ap_llc_return_mask;
-	unsigned int sbi_ap_llc_return_pos;
-	unsigned int sbi_cp_llc_way_mask;
-	unsigned int sbi_cp_llc_way_pos;
-	unsigned int sbi_cp_llc_alloc_mask;
-	unsigned int sbi_cp_llc_alloc_pos;
-	unsigned int sbi_cp_llc_return_mask;
-	unsigned int sbi_cp_llc_return_pos;
-#endif
+	struct wake_lock cp_wakelock;	/* Requested by CP */
 
 	/**
 	 * Member variables for TX & RX
@@ -310,9 +296,7 @@ struct mem_link_device {
 	struct hrtimer tx_timer;
 	struct hrtimer sbd_tx_timer;
 	struct hrtimer sbd_print_timer;
-#if IS_ENABLED(CONFIG_CP_PKTPROC_UL)
-	struct hrtimer pktproc_tx_timer;
-#endif
+
 	struct work_struct page_reclaim_work;
 
 	/**
@@ -320,9 +304,7 @@ struct mem_link_device {
 	 */
 	struct delayed_work bootdump_rx_dwork;
 	struct std_dload_info img_info;	/* Information of each binary image */
-	atomic_t init_end_cnt;
-	atomic_t init_end_busy;
-	int last_init_end_cnt;
+	atomic_t cp_boot_done;
 
 	/**
 	 * Mandatory methods for the common memory-type interface framework
@@ -360,20 +342,15 @@ struct mem_link_device {
 	struct timer_list crash_ack_timer;
 
 	spinlock_t state_lock;
-	/* protects boot_base nc region */
-	struct mutex vmap_lock;
 	enum link_state state;
 
 	struct net_device dummy_net;
 	struct napi_struct mld_napi;
-	atomic_t stop_napi_poll;
 	unsigned int rx_int_enable;
 	unsigned int rx_int_count;
 	unsigned int rx_poll_count;
 	unsigned long long rx_int_disabled_time;
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0))
-	struct timespec64 flush_time;
-#else
+#ifdef CONFIG_MODEM_IF_NET_GRO
 	struct timespec flush_time;
 #endif
 
@@ -389,22 +366,12 @@ struct mem_link_device {
 	u32 __iomem *srinfo_offset;
 	u32 __iomem *clk_table_offset;
 	u32 __iomem *buff_desc_offset;
-	u32 __iomem *capability_offset;
-
-	u32 __iomem *ap_capability_0_offset;
-	u32 __iomem *cp_capability_0_offset;
-	u32 __iomem *ap_capability_1_offset;
-	u32 __iomem *cp_capability_1_offset;
 
 	/* Location for control messages in shared memory */
 	struct ctrl_msg ap2cp_msg;
 	struct ctrl_msg cp2ap_msg;
 	struct ctrl_msg ap2cp_united_status;
 	struct ctrl_msg cp2ap_united_status;
-#if IS_ENABLED(CONFIG_CP_LLC)
-	struct ctrl_msg ap2cp_llc_status;
-	struct ctrl_msg cp2ap_llc_status;
-#endif
 	struct ctrl_msg ap2cp_kerneltime;	/* for DRAM_V1 and MAILBOX_SR */
 	struct ctrl_msg ap2cp_kerneltime_sec;	/* for DRAM_V2 */
 	struct ctrl_msg ap2cp_kerneltime_usec;	/* for DRAM_V2 */
@@ -415,25 +382,22 @@ struct mem_link_device {
 	int msi_irq_base;
 	int msi_irq_base_enabled;
 
+#if defined(CONFIG_SEC_MODEM_S5000AP) && defined(CONFIG_SEC_MODEM_S5100)
+	struct shmem_ulpath_table ulpath_prev;
+	struct shmem_ulpath_table *ulpath;
+#endif
+
 	u32 __iomem *srinfo_base;
 	u32 srinfo_size;
 	u32 __iomem *clk_table;
 
-	u32 ap_capability_0;
-	u32 cp_capability_0;
-	u32 ap_capability_1;
-	u32 cp_capability_1;
-
 	int (*pass_skb_to_net)(struct mem_link_device *mld, struct sk_buff *skb);
 
 	struct pktproc_adaptor pktproc;
-#if IS_ENABLED(CONFIG_CP_PKTPROC_UL)
-	struct pktproc_adaptor_ul pktproc_ul;
-#endif
 
 	struct cpboot_spi *boot_spi;
 
-	struct cpif_tpmon *tpmon;
+	struct cpif_tpmon tpmon;
 };
 
 #define to_mem_link_device(ld) \
@@ -461,13 +425,19 @@ struct clock_table {
 	struct clock_table_info table_info[MAX_TABLE_COUNT];
 };
 
-/*============================================================================*/
+#endif
+
+#ifdef GROUP_MEM_TYPE
+
 static inline bool mem_type_shmem(enum mem_iface_type type)
 {
 	return (type & MEM_SHMEM_TYPE_MASK) ? true : false;
 }
 
-/*============================================================================*/
+#endif
+
+#ifdef GROUP_MEM_LINK_INTERRUPT
+
 static inline bool int_valid(u16 x)
 {
 	return (x & MASK_INT_VALID) ? true : false;
@@ -478,9 +448,9 @@ static inline u16 mask2int(u16 mask)
 	return mask | MASK_INT_VALID;
 }
 
-/*
- * @remark		This must be invoked after validation with int_valid().
- */
+/**
+@remark		This must be invoked after validation with int_valid().
+*/
 static inline bool cmd_valid(u16 x)
 {
 	return (x & MASK_CMD_VALID) ? true : false;
@@ -507,7 +477,10 @@ static inline u16 cmd2int(u16 cmd)
 	return mask2int(cmd | MASK_CMD_VALID);
 }
 
-/*============================================================================*/
+#endif
+
+#ifdef GROUP_MEM_IPC_DEVICE
+
 static inline struct circ_queue *cq(struct legacy_ipc_device *dev,
 				    enum direction dir)
 {
@@ -637,6 +610,13 @@ static inline bool txq_empty(struct legacy_ipc_device *dev)
 	return circ_empty(head, tail);
 }
 
+static inline enum dev_format dev_id(enum sipc_ch_id ch)
+{
+	return sipc5_fmt_ch(ch) ? IPC_FMT : IPC_RAW;
+}
+
+#endif
+
 static inline int construct_ctrl_msg(struct ctrl_msg *cmsg, u32 *arr_from_dt,
 					u8 __iomem *base)
 {
@@ -683,8 +663,8 @@ static inline u32 get_ctrl_msg(struct ctrl_msg *cmsg)
 
 	switch (cmsg->type) {
 	case MAILBOX_SR:
-#if IS_ENABLED(CONFIG_MCU_IPC)
-		val = cp_mbox_get_sr(cmsg->sr_num);
+#if defined(CONFIG_MCU_IPC)
+		val = mbox_get_value(MCU_CP, cmsg->sr_num);
 #endif
 		break;
 	case DRAM_V1:
@@ -704,8 +684,8 @@ static inline void set_ctrl_msg(struct ctrl_msg *cmsg, u32 msg)
 {
 	switch (cmsg->type) {
 	case MAILBOX_SR:
-#if IS_ENABLED(CONFIG_MCU_IPC)
-		cp_mbox_set_sr(cmsg->sr_num, msg);
+#if defined(CONFIG_MCU_IPC)
+		mbox_set_value(MCU_CP, cmsg->sr_num, msg);
 #endif
 		break;
 	case DRAM_V1:
@@ -725,8 +705,8 @@ static inline u32 extract_ctrl_msg(struct ctrl_msg *cmsg, u32 mask, u32 pos)
 
 	switch (cmsg->type) {
 	case MAILBOX_SR:
-#if IS_ENABLED(CONFIG_MCU_IPC)
-		val = cp_mbox_extract_sr(cmsg->sr_num, mask, pos);
+#if defined(CONFIG_MCU_IPC)
+		val = mbox_extract_value(MCU_CP, cmsg->sr_num, mask, pos);
 #endif
 		break;
 	case DRAM_V1:
@@ -748,8 +728,8 @@ static inline void update_ctrl_msg(struct ctrl_msg *cmsg, u32 msg, u32 mask, u32
 
 	switch (cmsg->type) {
 	case MAILBOX_SR:
-#if IS_ENABLED(CONFIG_MCU_IPC)
-		cp_mbox_update_sr(cmsg->sr_num, msg, mask, pos);
+#if defined(CONFIG_MCU_IPC)
+		mbox_update_value(MCU_CP, cmsg->sr_num, msg, mask, pos);
 #endif
 		break;
 	case DRAM_V1:
@@ -766,7 +746,8 @@ static inline void update_ctrl_msg(struct ctrl_msg *cmsg, u32 msg, u32 mask, u32
 	}
 }
 
-/*============================================================================*/
+#ifdef GROUP_MEM_LINK_SNAPSHOT
+
 int msb_init(void);
 
 struct mst_buff *msb_alloc(void);
@@ -783,7 +764,10 @@ void msb_queue_purge(struct mst_buff_head *list);
 struct mst_buff *mem_take_snapshot(struct mem_link_device *mld,
 				   enum direction dir);
 
-/*============================================================================*/
+#endif
+
+#ifdef GROUP_MEM_LINK_INTERRUPT
+
 static inline void send_ipc_irq(struct mem_link_device *mld, u16 val)
 {
 	if (likely(mld->send_ap2cp_irq))
@@ -792,7 +776,10 @@ static inline void send_ipc_irq(struct mem_link_device *mld, u16 val)
 
 void mem_irq_handler(struct mem_link_device *mld, struct mst_buff *msb);
 
-/*============================================================================*/
+#endif
+
+#ifdef GROUP_MEM_LINK_SETUP
+
 void __iomem *mem_vmap(phys_addr_t pa, size_t size, struct page *pages[]);
 void mem_vunmap(void *va);
 
@@ -809,23 +796,22 @@ void mem_setup_ipc_map(struct mem_link_device *mld);
 struct mem_link_device *mem_create_link_device(enum mem_iface_type type,
 					       struct modem_data *modem);
 
-/*============================================================================*/
+#endif
+
+#ifdef GROUP_MEM_LINK_COMMAND
+
 int mem_reset_ipc_link(struct mem_link_device *mld);
 void mem_cmd_handler(struct mem_link_device *mld, u16 cmd);
 
-/*============================================================================*/
+#endif
+
+#ifdef GROUP_MEM_FLOW_CONTROL
+
 void sbd_txq_stop(struct sbd_ring_buffer *rb);
 void sbd_txq_start(struct sbd_ring_buffer *rb);
 
 int sbd_under_tx_flow_ctrl(struct sbd_ring_buffer *rb);
 int sbd_check_tx_flow_ctrl(struct sbd_ring_buffer *rb);
-
-#if IS_ENABLED(CONFIG_CP_PKTPROC_UL)
-void pktproc_ul_q_stop(struct pktproc_queue_ul *q);
-void pktproc_ul_q_start(struct pktproc_queue_ul *q);
-int pktproc_under_ul_flow_ctrl(struct pktproc_queue_ul *q);
-int pktproc_check_ul_flow_ctrl(struct pktproc_queue_ul *q);
-#endif
 
 void tx_flowctrl_suspend(struct mem_link_device *mld);
 void tx_flowctrl_resume(struct mem_link_device *mld);
@@ -843,11 +829,17 @@ void recv_req_ack(struct mem_link_device *mld, struct legacy_ipc_device *dev,
 		  struct mem_snapshot *mst);
 void send_res_ack(struct mem_link_device *mld, struct legacy_ipc_device *dev);
 
-/*============================================================================*/
+#endif
+
+#ifdef GROUP_MEM_CP_CRASH
+
 void mem_handle_cp_crash(struct mem_link_device *mld, enum modem_state state);
 void mem_forced_cp_crash(struct mem_link_device *mld);
 
-/*============================================================================*/
+#endif
+
+#ifdef GROUP_MEM_LINK_DEBUG
+
 void print_req_ack(struct mem_link_device *mld, struct mem_snapshot *mst,
 		   struct legacy_ipc_device *dev, enum direction dir);
 void print_res_ack(struct mem_link_device *mld, struct mem_snapshot *mst,
@@ -856,6 +848,8 @@ void print_res_ack(struct mem_link_device *mld, struct mem_snapshot *mst,
 void print_mem_snapshot(struct mem_link_device *mld, struct mem_snapshot *mst);
 void print_dev_snapshot(struct mem_link_device *mld, struct mem_snapshot *mst,
 			struct legacy_ipc_device *dev);
+
+#endif
 
 static inline struct sk_buff *mem_alloc_skb(unsigned int len)
 {
@@ -868,7 +862,7 @@ static inline struct sk_buff *mem_alloc_skb(unsigned int len)
 	if (!skb) {
 		mif_err("ERR! alloc_skb(len:%d + pad:%d, gfp:0x%x) fail\n",
 			len, NET_SKB_PAD, priority);
-#if IS_ENABLED(CONFIG_SEC_DEBUG_MIF_OOM)
+#ifdef CONFIG_SEC_DEBUG_MIF_OOM
 		show_mem(SHOW_MEM_FILTER_NODES);
 #endif
 		return NULL;
@@ -878,7 +872,8 @@ static inline struct sk_buff *mem_alloc_skb(unsigned int len)
 	return skb;
 }
 
-/*============================================================================*/
+#ifdef GROUP_MEM_LINK_IOSM_MESSAGE
+
 /* direction: CP -> AP */
 #define IOSM_C2A_MDM_READY	0x80
 #define IOSM_C2A_CONF_CH_RSP	0xA3	/* answer of flow control msg */
@@ -909,8 +904,10 @@ void iosm_event_bh(struct mem_link_device *mld, u16 cmd);
 
 #define NET_HEADROOM (NET_SKB_PAD + NET_IP_ALIGN)
 
-#if IS_ENABLED(CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE)
+#endif
+
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
 extern int is_rndis_use(void);
 #endif
 
-#endif /* __MODEM_LINK_DEVICE_MEMORY_H__ */
+#endif

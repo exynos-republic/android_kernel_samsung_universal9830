@@ -327,10 +327,8 @@ static struct platform_driver exynos_pd_dbg_drv = {
 	},
 };
 
-static int exynos_pd_dbg_init(void)
+static int __init exynos_pd_dbg_init(void)
 {
 	return platform_driver_register(&exynos_pd_dbg_drv);
 }
 late_initcall(exynos_pd_dbg_init);
-
-MODULE_LICENSE("GPL");

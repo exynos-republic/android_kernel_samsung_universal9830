@@ -1,10 +1,9 @@
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/io.h>
-#include <linux/module.h>
 #include <linux/delay.h>
 #include <soc/samsung/ect_parser.h>
-#include <soc/samsung/exynos-pmu-if.h>
+#include <soc/samsung/exynos-pmu.h>
 
 #include "cmucal.h"
 #include "ra.h"
@@ -138,7 +137,7 @@ static int ra_pll_set_pmsk(struct cmucal_clk *clk,
 			       struct cmucal_pll_table *rate_table)
 {
 	struct cmucal_pll *pll = to_pll_clk(clk);
-	unsigned int mdiv, pdiv, sdiv, pll_con0, pll_con1, fdiv;
+	unsigned int mdiv, pdiv, sdiv, pll_con0, pll_con1;
 	signed short kdiv;
 	int ret = 0;
 
@@ -160,30 +159,17 @@ static int ra_pll_set_pmsk(struct cmucal_clk *clk,
 	pll_con0 |= PLL_MUX_SEL | (1 << clk->e_shift);
 
 	if (is_frac_pll(pll)) {
-		if (is_frac_r_pll(*clk)) {
-			fdiv = rate_table->fdiv;
-			if (fdiv)
-				writel(pdiv * pll->flock_time, clk->lock);
-			else
-				writel(pdiv * pll->lock_time, clk->lock);
+		kdiv = rate_table->kdiv;
+		if (kdiv)
+			writel(pdiv * pll->flock_time, clk->lock);
+		else
+			writel(pdiv * pll->lock_time, clk->lock);
 
-			if (clk->pll_con1) {
-				pll_con1 = fdiv;
-				writel(pll_con1, clk->pll_con1);
-			}
-		} else {
-			kdiv = rate_table->kdiv;
-			if (kdiv)
-				writel(pdiv * pll->flock_time, clk->lock);
-			else
-				writel(pdiv * pll->lock_time, clk->lock);
-
-			if (clk->pll_con1) {
-				pll_con1 = readl(clk->pll_con1);
-				pll_con1 &= ~(get_mask(pll->k_width, pll->k_shift));
-				pll_con1 |= (kdiv << pll->k_shift);
-				writel(pll_con1, clk->pll_con1);
-			}
+		if (clk->pll_con1) {
+			pll_con1 = readl(clk->pll_con1);
+			pll_con1 &= ~(get_mask(pll->k_width, pll->k_shift));
+			pll_con1 |= (kdiv << pll->k_shift);
+			writel(pll_con1, clk->pll_con1);
 		}
 	} else {
 		writel(pdiv * pll->lock_time, clk->lock);
@@ -288,8 +274,8 @@ static int ra_set_div_rate(struct cmucal_clk *clk, unsigned int rate)
 
 	if (ratio > 0 && ratio <= max_ratio) {
 		if (p_rate % rate) {
-			diff1 = p_rate / ratio - rate;
-			diff2 = rate - p_rate /(ratio + 1);
+			diff1 = p_rate - (ratio * rate);
+			diff2 = ratio * rate + rate - p_rate;
 			if (diff1 > diff2) {
 				ret = ra_set_div_mux(clk, ratio);
 				return ret;
@@ -357,8 +343,8 @@ static int ra_set_pll(struct cmucal_clk *clk, unsigned int rate,
 static unsigned long ra_get_pll(struct cmucal_clk *clk)
 {
 	struct cmucal_pll *pll;
-	unsigned int mdiv, pdiv, sdiv, pll_con0, fdiv = 0;
-	short kdiv = 0;
+	unsigned int mdiv, pdiv, sdiv, pll_con0;
+	short kdiv;
 	unsigned long long fout;
 
 	if (!ra_is_pll_enabled(clk)) {
@@ -383,23 +369,14 @@ static unsigned long ra_get_pll(struct cmucal_clk *clk)
 
 	if (is_normal_pll(pll)) {
 		fout *= mdiv;
-		if (pll->type == pll_0716x || pll->freq_type == HIGH_FREQ_PLL)
+		if (pll->type == pll_0716x)
 			fout *= 2;
 		do_div(fout, (pdiv << sdiv));
 	} else if (is_frac_pll(pll) && clk->pll_con1) {
-		if (is_frac_r_pll(*clk)) {
-			fdiv = readl(clk->pll_con1);
-			if (fdiv >> 31)
-				mdiv--;
-			fout *= (mdiv << 24) + (fdiv >> 8);
-			do_div(fout, (pdiv << sdiv));
-			fout >>= 24;
-		} else {
-			kdiv = get_value(clk->pll_con1, pll->k_shift, pll->k_width);
-			fout *= (mdiv << 16) + kdiv;
-			do_div(fout, (pdiv << sdiv));
-			fout >>= 16;
-		}
+		kdiv = get_value(clk->pll_con1, pll->k_shift, pll->k_width);
+		fout *= (mdiv << 16) + kdiv;
+		do_div(fout, (pdiv << sdiv));
+		fout >>= 16;
 	} else {
 		pr_err("Un-support PLL type\n");
 		fout = 0;
@@ -760,7 +737,7 @@ unsigned long ra_get_value(unsigned int id)
 	return val;
 }
 
-static unsigned int ra_get_sfr_address(unsigned short idx,
+static unsigned int __init ra_get_sfr_address(unsigned short idx,
 			       void __iomem **addr,
 			       unsigned char *shift,
 			       unsigned char *width)
@@ -838,12 +815,6 @@ static void ra_get_pll_address(struct cmucal_clk *clk)
 				   &clk->pll_con1,
 				   &pll->k_shift,
 				   &pll->k_width);
-	/* f_div */
-	if (pll->f_idx != EMPTY_CAL_ID)
-		ra_get_sfr_address(pll->f_idx,
-				   &clk->pll_con1,
-				   &pll->f_shift,
-				   &pll->f_width);
 	else
 		clk->pll_con1 = NULL;
 }
@@ -878,10 +849,6 @@ static void ra_get_pll_rate_table(struct cmucal_clk *clk)
 		table[i].mdiv = pll_frequency->m;
 		table[i].sdiv = pll_frequency->s;
 		table[i].kdiv = pll_frequency->k;
-		/*It need to  match with ECT. fdiv = pll_freqency->f
-		 * exynos9840 ECT has only P, M, S, K.
-		 * and exynos9840's all ECT PLL does not use K, F */
-		table[i].fdiv = 0;
 	}
 
 	pll->rate_table = table;
@@ -1203,7 +1170,7 @@ unsigned long ra_recalc_rate(unsigned int id)
 }
 EXPORT_SYMBOL_GPL(ra_recalc_rate);
 
-int ra_init(void)
+int __init ra_init(void)
 {
 	struct cmucal_clk *clk;
 	struct sfr_block *block;
@@ -1229,7 +1196,7 @@ int ra_init(void)
 
 		ra_get_pll_rate_table(clk);
 
-		pll_get_info(to_pll_clk(clk));
+		pll_get_locktime(to_pll_clk(clk));
 	}
 
 	size = cmucal_get_list_size(MUX_TYPE);
@@ -1415,5 +1382,3 @@ int ra_init(void)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(ra_init);
-
-MODULE_LICENSE("GPL");

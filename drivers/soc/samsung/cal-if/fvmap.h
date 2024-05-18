@@ -1,32 +1,22 @@
 #ifndef __FVMAP_H__
 #define __FVMAP_H__
 
-#define BLOCK_ADDR_SIZE			(3)
-#define CHILD_ID_NUM			(12)
-
 /* FV(Frequency Voltage MAP) */
 struct fvmap_header {
-	unsigned char domain_id;
+	unsigned char dvfs_type;
 	unsigned char num_of_lv;
 	unsigned char num_of_members;
 	unsigned char num_of_pll;
 	unsigned char num_of_mux;
 	unsigned char num_of_div;
-	unsigned short o_famrate;
+	unsigned short gearratio;
 	unsigned char init_lv;
-	unsigned char num_of_child;
-	unsigned char parent_id;
-	unsigned char parent_offset;
-	unsigned short block_addr[BLOCK_ADDR_SIZE];
+	unsigned char num_of_gate;
+	unsigned char reserved[2];
+	unsigned short block_addr[3];
 	unsigned short o_members;
 	unsigned short o_ratevolt;
 	unsigned short o_tables;
-
-	unsigned int init_rate;
-	unsigned int min_rate;
-	unsigned int max_rate;
-	unsigned char child_id[CHILD_ID_NUM];
-	unsigned char copy_col;
 };
 
 struct clocks {
@@ -41,8 +31,8 @@ struct pll_header {
 };
 
 struct rate_volt {
-	u32 rate:24;
-	u32 volt:8;
+	unsigned int rate;
+	unsigned int volt;
 };
 
 struct rate_volt_header {
@@ -53,16 +43,9 @@ struct dvfs_table {
 	unsigned char val[0];
 };
 
-struct freq_volt {
-	unsigned int rate;
-	unsigned int volt;
-};
-
-#if defined(CONFIG_ACPM_DVFS) || defined(CONFIG_ACPM_DVFS_MODULE)
+#ifdef CONFIG_ACPM_DVFS
 extern int fvmap_init(void __iomem *sram_base);
 extern int fvmap_get_voltage_table(unsigned int id, unsigned int *table);
-extern int fvmap_get_freq_volt_table(unsigned int id, void *freq_volt_table,
-		unsigned int table_size);
 #else
 static inline int fvmap_init(void __iomem *sram_base)
 {
@@ -70,11 +53,6 @@ static inline int fvmap_init(void __iomem *sram_base)
 }
 
 static inline int fvmap_get_voltage_table(unsigned int id, unsigned int *table)
-{
-	return 0;
-}
-static inline int fvmap_get_freq_volt_table(unsigned int id, void *freq_volt_table,
-		unsigned int table_size);
 {
 	return 0;
 }

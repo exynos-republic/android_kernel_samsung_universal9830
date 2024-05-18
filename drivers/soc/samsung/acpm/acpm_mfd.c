@@ -14,7 +14,9 @@
 #include <soc/samsung/acpm_mfd.h>
 #include <soc/samsung/acpm_ipc_ctrl.h>
 
-int exynos_acpm_read_reg(struct device_node *acpm_mfd_node, u8 channel, u16 type, u8 reg, u8 *dest)
+struct device_node *acpm_mfd_node;
+
+int exynos_acpm_read_reg(u8 channel, u16 type, u8 reg, u8 *dest)
 {
 	unsigned int channel_num, size;
 	struct ipc_config config;
@@ -57,9 +59,8 @@ int exynos_acpm_read_reg(struct device_node *acpm_mfd_node, u8 channel, u16 type
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(exynos_acpm_read_reg);
 
-int exynos_acpm_bulk_read(struct device_node *acpm_mfd_node, u8 channel, u16 type, u8 reg, int count, u8 *buf)
+int exynos_acpm_bulk_read(u8 channel, u16 type, u8 reg, int count, u8 *buf)
 {
 	unsigned int channel_num, size;
 	struct ipc_config config;
@@ -105,9 +106,8 @@ int exynos_acpm_bulk_read(struct device_node *acpm_mfd_node, u8 channel, u16 typ
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(exynos_acpm_bulk_read);
 
-int exynos_acpm_write_reg(struct device_node *acpm_mfd_node, u8 channel, u16 type, u8 reg, u8 value)
+int exynos_acpm_write_reg(u8 channel, u16 type, u8 reg, u8 value)
 {
 	unsigned int channel_num, size;
 	struct ipc_config config;
@@ -148,9 +148,8 @@ int exynos_acpm_write_reg(struct device_node *acpm_mfd_node, u8 channel, u16 typ
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(exynos_acpm_write_reg);
 
-int exynos_acpm_bulk_write(struct device_node *acpm_mfd_node, u8 channel, u16 type, u8 reg, int count, u8 *buf)
+int exynos_acpm_bulk_write(u8 channel, u16 type, u8 reg, int count, u8 *buf)
 {
 	unsigned int channel_num, size;
 	struct ipc_config config;
@@ -197,9 +196,8 @@ int exynos_acpm_bulk_write(struct device_node *acpm_mfd_node, u8 channel, u16 ty
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(exynos_acpm_bulk_write);
 
-int exynos_acpm_update_reg(struct device_node *acpm_mfd_node, u8 channel, u16 type, u8 reg, u8 value, u8 mask)
+int exynos_acpm_update_reg(u8 channel, u16 type, u8 reg, u8 value, u8 mask)
 {
 	unsigned int channel_num, size;
 	struct ipc_config config;
@@ -243,4 +241,3 @@ int exynos_acpm_update_reg(struct device_node *acpm_mfd_node, u8 channel, u16 ty
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(exynos_acpm_update_reg);

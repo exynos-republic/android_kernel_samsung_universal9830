@@ -11,7 +11,6 @@
 
 #include <linux/kernel.h>
 #include <linux/slab.h>
-#include <linux/module.h>
 #include <asm/cacheflush.h>
 
 #include "../exynos-hdcp2-config.h"
@@ -72,10 +71,8 @@ static int utc_encryption(struct hdcp_tx_ctx *tx_ctx, struct hdcp_rx_ctx *rx_ctx
 	/* set output counters */
 	memset(&tx_ctx->str_ctr, 0x00, HDCP_STR_CTR_LEN);
 
-	// hack: mark on 5.4
-	// __flush_dcache_area(input, packet_len);
-	// __flush_dcache_area(output, packet_len);
-
+	__flush_dcache_area(input, packet_len);
+	__flush_dcache_area(output, packet_len);
 	ret = encrypt_packet(pes_priv,
 		input_phy, packet_len,
 		output_phy, packet_len,
@@ -663,5 +660,3 @@ int iia_hdcp_protocol_self_test(void)
 
 	return 0;
 }
-
-MODULE_LICENSE("GPL");

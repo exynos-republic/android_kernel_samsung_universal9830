@@ -1,7 +1,7 @@
 /*
  * Exynos regulator support.
  *
- * Copyright (c) 2020 Samsung Electronics Co., Ltd.
+ * Copyright (c) 2016 Samsung Electronics Co., Ltd.
  *              http://www.samsung.com
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,7 +21,6 @@
 #include <linux/regulator/driver.h>
 #include <linux/regulator/machine.h>
 #include <linux/debugfs.h>
-#include <soc/samsung/debug-snapshot.h>
 #include <linux/device.h>
 #include <linux/slab.h>
 #include "../../regulator/internal.h"
@@ -43,7 +42,7 @@ struct exynos_rgt_info {
 static struct dentry *exynos_rgt_root;
 static int num_regulators = 0;
 
-#if defined(CONFIG_DEBUG_SNAPSHOT) || defined(CONFIG_DEBUG_SNAPSHOT_MODULE)
+#ifdef CONFIG_DEBUG_SNAPSHOT
 #define REG_MAP_MAX		(0x100)
 
 struct regulator_ss_info {
@@ -278,7 +277,7 @@ static const struct file_operations exynos_rgt_volt_fops = {
 	.llseek = default_llseek,
 };
 
-#if defined(CONFIG_DEBUG_SNAPSHOT) || defined(CONFIG_DEBUG_SNAPSHOT_MODULE)
+#ifdef CONFIG_DEBUG_SNAPSHOT
 struct regulator_ss_info *get_regulator_ss(u32 rgt_idx, u32 spd_ch)
 {
 	if (spd_ch < rgt_ss_info.acpm_pmic_cnt && rgt_idx < rgt_ss_info.acpm_reg_cnt[spd_ch])
@@ -399,7 +398,7 @@ static int prepare_dss_regulator(struct platform_device *pdev)
 
 void exynos_rgt_dbg_snapshot_regulator(u32 val, unsigned long long time)
 {
-#if defined(CONFIG_DEBUG_SNAPSHOT) || defined(CONFIG_DEBUG_SNAPSHOT_MODULE)
+#ifdef CONFIG_DEBUG_SNAPSHOT
 	u32 spd_ch, reg_addr, mod_addr, reg_data, reg_id;
 
 	spd_ch = (val >> 28) & 0xf;
@@ -420,7 +419,6 @@ void exynos_rgt_dbg_snapshot_regulator(u32 val, unsigned long long time)
 #endif
 	return ;
 }
-EXPORT_SYMBOL(exynos_rgt_dbg_snapshot_regulator);
 
 static int exynos_rgt_probe(struct platform_device *pdev)
 {
@@ -429,7 +427,7 @@ static int exynos_rgt_probe(struct platform_device *pdev)
 	struct device_node *regulators_np, *reg_np;
 	int rgt_idx = 0;
 	const char *rgt_name;
-#if defined(CONFIG_DEBUG_SNAPSHOT) || defined(CONFIG_DEBUG_SNAPSHOT_MODULE)
+#ifdef CONFIG_DEBUG_SNAPSHOT
 	struct regulator_desc rdesc;
 	int rgt_ss_idx, ipc_ch, spd_ch;
 	struct device_node *pmic_np;
@@ -463,14 +461,14 @@ static int exynos_rgt_probe(struct platform_device *pdev)
 		goto err_dbgfs_root;
 	}
 
-#if defined(CONFIG_DEBUG_SNAPSHOT) || defined(CONFIG_DEBUG_SNAPSHOT_MODULE)
+#ifdef CONFIG_DEBUG_SNAPSHOT
 	ret = prepare_dss_regulator(pdev);
 	if (ret)
 		goto err_dbgfs_root;
 #endif
 	regulators_np = of_find_node_by_name(NULL, "regulators");
 	while (regulators_np) {
-#if defined(CONFIG_DEBUG_SNAPSHOT) || defined(CONFIG_DEBUG_SNAPSHOT_MODULE)
+#ifdef CONFIG_DEBUG_SNAPSHOT
 		rgt_ss_idx = 0;
 #endif
 		for_each_child_of_node(regulators_np, reg_np) {
@@ -498,7 +496,7 @@ static int exynos_rgt_probe(struct platform_device *pdev)
 			rgt_info[rgt_idx].f_volt =
 				debugfs_create_file("voltage", 0600, rgt_info[rgt_idx].reg_dir,
 						rgt_info[rgt_idx].rgt, &rgt_info[rgt_idx].volt_fops);
-#if defined(CONFIG_DEBUG_SNAPSHOT) || defined(CONFIG_DEBUG_SNAPSHOT_MODULE)
+#ifdef CONFIG_DEBUG_SNAPSHOT
 			pmic_np = of_get_parent(regulators_np);
 			ret = of_property_read_u32(pmic_np, "acpm-ipc-channel", &ipc_ch);
 			if (!ret) {
@@ -521,7 +519,7 @@ static int exynos_rgt_probe(struct platform_device *pdev)
 		}
 		regulators_np = of_find_node_by_name(regulators_np, "regulators");
 	}
-#if defined(CONFIG_DEBUG_SNAPSHOT) || defined(CONFIG_DEBUG_SNAPSHOT_MODULE)
+#ifdef CONFIG_DEBUG_SNAPSHOT
 	set_reg_map();
 #endif
 	platform_set_drvdata(pdev, rgt_info);
@@ -578,11 +576,3 @@ static int __init exynos_rgt_init(void)
 	return platform_driver_register(&exynos_rgt_drv);
 }
 late_initcall(exynos_rgt_init);
-
-static void exynos_rgt_exit(void)
-{
-	return platform_driver_unregister(&exynos_rgt_drv);
-}
-module_exit(exynos_rgt_exit);
-
-MODULE_LICENSE("GPL");

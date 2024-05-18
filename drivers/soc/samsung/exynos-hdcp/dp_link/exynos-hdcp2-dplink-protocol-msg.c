@@ -10,7 +10,6 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/module.h>
 
 #include "../exynos-hdcp2-config.h"
 #include "../exynos-hdcp2-protocol-msg.h"
@@ -481,5 +480,3 @@ static int dp_decap_rpauth_stream_ready(uint8_t *m,
 
 	return 0;
 }
-
-MODULE_LICENSE("GPL");

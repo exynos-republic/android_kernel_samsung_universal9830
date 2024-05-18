@@ -12,8 +12,6 @@
 #include <linux/kernel.h>
 #include "exynos-hdcp2-protocol-msg.h"
 #include "exynos-hdcp2-log.h"
-#include <linux/kernel.h>
-#include <linux/module.h>
 
 static void OS2BN(uint32_t *pdRes, uint8_t *pbSrc, size_t uSrcLen)
 {
@@ -138,4 +136,3 @@ int encrypt_packet(uint8_t *priv_data,
 	return 0;
 }
 
-MODULE_LICENSE("GPL");

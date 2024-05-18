@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2010 Samsung Electronics.
  *
@@ -48,8 +47,66 @@
 
 #define EXYNOS_HEADER_SIZE		12
 
+#define EXYNOS_DATA_LOOPBACK_CHANNEL	82
+
 #define EXYNOS_FMT_NUM		1
 #define EXYNOS_RFS_NUM		10
+
+enum exynos_ch_id {
+	EXYNOS_CH_ID_MULTIPDP = 0,
+
+	EXYNOS_CH_ID_PDP_0 = 1,    /*rmnet0*/
+	EXYNOS_CH_ID_PDP_1,
+	EXYNOS_CH_ID_PDP_2,
+	EXYNOS_CH_ID_PDP_3,
+	EXYNOS_CH_ID_PDP_4,
+	EXYNOS_CH_ID_PDP_5,
+	EXYNOS_CH_ID_PDP_6,
+	EXYNOS_CH_ID_PDP_7,
+	EXYNOS_CH_ID_PDP_8,
+	EXYNOS_CH_ID_PDP_9,
+	EXYNOS_CH_ID_PDP_10,
+	EXYNOS_CH_ID_PDP_11,
+	EXYNOS_CH_ID_PDP_12,
+	EXYNOS_CH_ID_PDP_13,
+	EXYNOS_CH_ID_PDP_14,
+	EXYNOS_CH_ID_PDP_15,
+
+	EXYNOS_CH_ID_BT_DUN = 21,  /*umts_router*/
+
+	EXYNOS_CH_ID_UTS = 23,		/* umts_atc0 */
+	EXYNOS_CH_ID_EMBMS_0 = 30,	/* Evolved Multimedia Broadcast Multicast Service */
+	EXYNOS_CH_ID_EMBMS_1,
+
+	EXYNOS_CH_ID_RFS_0 = 41,   /*umts_rfs*/
+	EXYNOS_CH_ID_RFS_1,
+	EXYNOS_CH_ID_RFS_2,
+	EXYNOS_CH_ID_RFS_3,
+	EXYNOS_CH_ID_RFS_4,
+	EXYNOS_CH_ID_RFS_5,
+	EXYNOS_CH_ID_RFS_6,
+	EXYNOS_CH_ID_RFS_7,
+	EXYNOS_CH_ID_RFS_8,
+	EXYNOS_CH_ID_RFS_9,
+
+	EXYNOS_CH_ID_CPLOG = 81,   /*umts_dm0*/
+	EXYNOS_CH_ID_LOOPBACK,     /*umts_loopback*/
+
+	EXYNOS_CH_ID_RCS_0 = 91,    /*CH_RAW_CS_VT_DATA*/
+	EXYNOS_CH_ID_RCS_1 = 92,    /*CH_RAW_CIQ_BRIDGE*/
+
+	EXYNOS_CH_ID_WFS_0 = 93,    /* umts_wfc0 */
+	EXYNOS_CH_ID_WFS_1 = 94,    /* umts_wfc1 */
+
+	EXYNOS_CH_ID_BOOT = 241,
+	EXYNOS_CH_ID_DUMP = 242,
+
+	EXYNOS_CH_ID_FMT_0 = 245,   /*umts_ipc0*/
+	EXYNOS_CH_ID_FMT_1 = 246,   /*umts_ipc1*/
+
+	EXYNOS_CH_ID_MAX = 255,
+	EXYNOS_CH_ID_FLOW_CTRL = 255
+};
 
 struct __packed frag_config {
 	u8 frame_first:1,
@@ -102,35 +159,30 @@ struct exynos_frame_data {
 static inline bool exynos_start_valid(u8 *frm)
 {
 	u16 cfg = *(u16 *)(frm + EXYNOS_START_OFFSET);
-
 	return cfg == EXYNOS_START_MASK ? true : false;
 }
 
 static inline bool exynos_multi_start_valid(u8 *frm)
 {
 	u16 cfg = *(u16 *)(frm + EXYNOS_FRAG_CONFIG_OFFSET);
-
 	return ((cfg >> 8) & EXYNOS_MULTI_START_MASK) == EXYNOS_MULTI_START_MASK;
 }
 
 static inline bool exynos_multi_last_valid(u8 *frm)
 {
 	u16 cfg = *(u16 *)(frm + EXYNOS_FRAG_CONFIG_OFFSET);
-
 	return ((cfg >> 8) & EXYNOS_MULTI_LAST_MASK) == EXYNOS_MULTI_LAST_MASK;
 }
 
 static inline bool exynos_single_frame(u8 *frm)
 {
 	u16 cfg = *(u16 *)(frm + EXYNOS_FRAG_CONFIG_OFFSET);
-
 	return ((cfg >> 8) & EXYNOS_SINGLE_MASK) == EXYNOS_SINGLE_MASK;
 }
 
 static inline bool exynos_multi_frame(u8 *frm)
 {
 	u16 cfg = *(u16 *)(frm + EXYNOS_FRAG_CONFIG_OFFSET);
-
 	return ((cfg >> 8) & EXYNOS_SINGLE_MASK) != EXYNOS_SINGLE_MASK;
 }
 
@@ -147,7 +199,6 @@ static inline u8 exynos_get_ch(u8 *frm)
 static inline unsigned int exynos_get_frame_seq(u8 *frm)
 {
 	u16 cfg = *(u16 *)(frm + EXYNOS_FRAME_SEQ_OFFSET);
-
 	return cfg;
 }
 
@@ -159,7 +210,6 @@ static inline unsigned int exynos_get_ch_seq(u8 *frm)
 static inline unsigned int exynos_calc_padding_size(unsigned int len)
 {
 	unsigned int residue = len & 0x7;
-
 	return residue ? (8 - residue) : 0;
 }
 

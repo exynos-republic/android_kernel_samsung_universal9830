@@ -8,7 +8,6 @@
  * published by the Free Software Foundation.
 */
 #include <linux/delay.h>
-#include <linux/module.h>
 #include "../exynos-hdcp2.h"
 #include "../exynos-hdcp2-misc.h"
 #include "../exynos-hdcp2-log.h"
@@ -558,9 +557,8 @@ static int do_send_ske_send_eks(struct hdcp_link_data *lk)
 	 * Currently, SST mode only use 0x00 as type value
 	 * MST mode, HDCP driver get type value from DP driver
 	 */
-#if defined(CONFIG_HDCP2_2_ERRATA_SUPPORT)
-	uint8_t type = 0x00;
-#endif
+	/* uint8_t type = 0x00; */
+
        /* check abort state firstly,
         * if session is abored by Rx, Tx stops Authentication process
         */
@@ -598,7 +596,7 @@ static int do_send_ske_send_eks(struct hdcp_link_data *lk)
 		return -1;
 	}
 
-#if defined(CONFIG_HDCP2_2_ERRATA_SUPPORT)
+#if 0 /* todo: configure type */
 	/* HDCP errata defined stream type.
 	 * type info is send only for receiver
 	 */
@@ -1203,5 +1201,3 @@ void dplink_clear_irqflag_all(void)
 	reauth_req = 0;
 	integrity_fail = 0;
 }
-
-MODULE_LICENSE("GPL");

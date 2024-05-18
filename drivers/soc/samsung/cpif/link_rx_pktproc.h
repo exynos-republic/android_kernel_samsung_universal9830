@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2018-2019, Samsung Electronics.
  *
@@ -27,6 +26,11 @@
 
 /* Numbers */
 #define PKTPROC_MAX_QUEUE	4
+#ifdef CONFIG_CP_JUMBO_4K_WA
+#define PKTPROC_MAX_PACKET_SIZE	4096
+#else
+#define PKTPROC_MAX_PACKET_SIZE	2048
+#endif
 
 /* Status bit field */
 #define PKTPROC_STATUS_DONE	0x01
@@ -42,9 +46,9 @@
  */
 /* Queue info */
 struct pktproc_q_info {
-	u32 cp_desc_pbase;
+	u32 desc_base;
 	u32 num_desc;
-	u32 cp_buff_pbase;
+	u32 data_base;
 	u32 fore_ptr;
 	u32 rear_ptr;
 } __packed;
@@ -56,11 +60,7 @@ struct pktproc_info_v1 {
 
 /* Info for V2 */
 struct pktproc_info_v2 {
-	u32 num_queues:4,
-		desc_mode:2,
-		irq_mode:2,
-		max_packet_size:16,
-		reserved:8;
+	u32 num_queues:4, mode:4, max_packet_size:16, reserved:8;
 	struct pktproc_q_info q_info[PKTPROC_MAX_QUEUE];
 } __packed;
 
@@ -69,7 +69,7 @@ struct pktproc_info_v2 {
  */
 /* RingBuf mode */
 struct pktproc_desc_ringbuf {
-	u32 cp_data_paddr;
+	u32 data_addr;
 	u32 information;
 	u32 reserve1;
 	u16 reserve2;
@@ -84,19 +84,16 @@ struct pktproc_desc_ringbuf {
 
 /* SktBuf mode */
 struct pktproc_desc_sktbuf {
-	u64 cp_data_paddr:36,
-		reserved0:4,
-		control:8,
-		status:8,
-		lro:5,
-		reserved1:3;
+	u32 data_addr;
+	u8 data_addr_msb:4, reserved0:4;
+	u8 control;
+	u8 status;
+	u8 lro:5, reserved1:3;
 	u16 length;
 	u16 filter_result;
 	u16 information;
 	u8 channel_id;
-	u8 reserved2:4,
-		itg:2,
-		reserved3:2;
+	u8 reserved2:4, itg:2, reserved3:2;
 } __packed;
 
 /* Statistics */
@@ -109,7 +106,6 @@ struct pktproc_statistics {
 	u64 err_bm_nomem;
 	u64 err_csum;
 	u64 use_memcpy_cnt;
-	u64 err_enqueue_dit;
 };
 
 /* Logical view for each queue */
@@ -121,17 +117,9 @@ struct pktproc_queue {
 	struct mem_link_device *mld;
 	struct pktproc_adaptor *ppa;
 
-	/* Pointer to fore_ptr of q_info. Increased AP when desc_mode is ringbuf mode */
-	u32 *fore_ptr;
-	/* Pointer to rear_ptr of q_info. Increased CP when desc_mode is sktbuf mode */
-	u32 *rear_ptr;
-	/* Follow rear_ptr when desc_mode is sktbuf mode */
-	u32 done_ptr;
-
-	/* Store */
-	u32 cp_desc_pbase;
-	u32 num_desc;
-	u32 cp_buff_pbase;
+	u32 *fore_ptr;	/* Pointer to fore_ptr of q_info. Increased AP when desc_mode is ringbuf mode */
+	u32 *rear_ptr;	/* Pointer to rear_ptr of q_info. Increased CP when desc_mode is sktbuf mode */
+	u32 done_ptr;	/* Follow rear_ptr when desc_mode is sktbuf mode */
 
 	/* Pointer to info region by version */
 	union {
@@ -142,7 +130,7 @@ struct pktproc_queue {
 			struct pktproc_info_v2 *info_v2;
 		};
 	};
-	struct pktproc_q_info *q_info_ptr;	/* Pointer to q_info of info_v */
+	struct pktproc_q_info *q_info;	/* Pointer to q_info of info_v */
 
 	/* Pointer to desc region by addr mode */
 	union {
@@ -155,43 +143,29 @@ struct pktproc_queue {
 	};
 	u32 desc_size;
 
-	/* Pointer to data buffer for a queue */
-	u8 __iomem *q_buff_vbase;
-	unsigned long q_buff_pbase;
-	u32 q_buff_size;
+	/* Pointer to data buffer */
+	u8 __iomem *data;
+	u32 data_size;
 
 	/* Buffer manager */
 	struct mif_buff_mng *manager;	/* Pointer to buffer manager */
-	dma_addr_t *dma_addr;
 	bool use_memcpy;	/* memcpy mode on sktbuf mode */
 
 	/* IRQ */
 	int irq;
-	u32 irq_idx;
 
 	/* NAPI */
 	struct net_device netdev;
 	struct napi_struct napi;
-	struct napi_struct *napi_ptr;
-	atomic_t stop_napi_poll;
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0))
-	struct timespec64 flush_time;
-#else
-	struct timespec flush_time;
-#endif
 
 	/* Statistics */
 	struct pktproc_statistics stat;
 
 	/* Func */
 	irqreturn_t (*irq_handler)(int irq, void *arg);
-	void (*enable_irq)(struct pktproc_queue *q);
-	void (*disable_irq)(struct pktproc_queue *q);
 	int (*get_packet)(struct pktproc_queue *q, struct sk_buff **new_skb);
 	int (*clean_rx_ring)(struct pktproc_queue *q, int budget, int *work_done);
 	int (*alloc_rx_buf)(struct pktproc_queue *q);
-	int (*update_fore_ptr)(struct pktproc_queue *q, u32 count);
-	int (*clear_data_addr)(struct pktproc_queue *q);
 };
 
 /*
@@ -216,6 +190,7 @@ enum pktproc_version {
 	MAX_VERSION
 };
 
+#ifdef CONFIG_CP_PKTPROC_PERF_TEST
 enum pktproc_perftest_mode {
 	PERFTEST_MODE_STOP,
 	PERFTEST_MODE_IPV4,
@@ -228,11 +203,9 @@ struct pktproc_perftest {
 	enum pktproc_perftest_mode mode;
 	int session;
 	u16 ch;
-	int cpu;
 	int udelay;
-	u32 seq_counter[PKTPROC_MAX_QUEUE];
+	u32 seq_counter[2];
 	u16 clat_ipv6[8];
-	int ipi_cpu[PKTPROC_MAX_QUEUE];
 };
 
 struct pktproc_perftest_data {
@@ -241,6 +214,7 @@ struct pktproc_perftest_data {
 	u16 dst_port_offset;
 	u16 packet_len;
 };
+#endif
 
 /* PktProc adaptor */
 struct pktproc_adaptor {
@@ -252,51 +226,33 @@ struct pktproc_adaptor {
 	u32 info_rgn_size;	/* Size of info region */
 	u32 desc_rgn_offset;	/* Offset of descriptor region */
 	u32 desc_rgn_size;	/* Size of descriptor region */
-	u32 buff_rgn_offset;	/* Offset of data buffer region */
-
-	bool info_desc_rgn_cached;
-	bool buff_rgn_cached;
+	u32 data_rgn_offset;	/* Offset of data buffer region */
 
 	enum pktproc_desc_mode desc_mode;	/* Descriptor structure mode */
 	u32 desc_num_ratio_percent;		/* Number of descriptors ratio as percent */
 	u32 num_queue;		/* Number of queue */
 	bool use_exclusive_irq;	/* Exclusive interrupt */
-	u32 exclusive_irq_idx[PKTPROC_MAX_QUEUE];
 	bool use_hw_iocc;	/* H/W IO cache coherency */
-	u32 max_packet_size;	/* Max packet size */
-	bool use_dedicated_baaw;	/* BAAW for 36bit address */
-	bool use_36bit_data_addr;	/* Data is located to 36bit address range */
 
-	struct device *dev;
-
-	bool use_napi;
-	bool use_buff_mng;
 	struct mif_buff_mng *manager;	/* Buffer manager */
-	u32 skb_padding_size;
 
-	void __iomem *info_vbase;	/* I/O region for information */
-	void __iomem *desc_vbase;	/* I/O region for descriptor */
-	void __iomem *buff_vbase;	/* I/O region for data buffer */
-	unsigned long buff_pbase;
+	void __iomem *info_base;	/* Physical region for information */
+	void __iomem *desc_base;	/* Physical region for descriptor */
+	void __iomem *data_base;	/* Physical region for data buffer */
 	struct pktproc_queue *q[PKTPROC_MAX_QUEUE];	/* Logical queue */
 
-	/* Debug */
- 	struct pktproc_perftest perftest;
-	bool pktgen_gro;
+#ifdef CONFIG_CP_PKTPROC_PERF_TEST
+	struct pktproc_perftest perftest;
+#endif
 };
 
-#if IS_ENABLED(CONFIG_CP_PKTPROC)
-extern int pktproc_create(struct platform_device *pdev, struct mem_link_device *mld,
-						unsigned long memaddr, u32 memsize);
+#if defined(CONFIG_CP_PKTPROC) || defined(CONFIG_CP_PKTPROC_V2)
+extern int pktproc_create(struct platform_device *pdev, struct mem_link_device *mld, u32 memaddr, u32 memsize);
 extern int pktproc_init(struct pktproc_adaptor *ppa);
-extern int pktproc_get_usage(struct pktproc_queue *q);
-extern int pktproc_get_usage_fore_rear(struct pktproc_queue *q);
-
 static inline int pktproc_check_support(struct pktproc_adaptor *ppa)
 {
 	return ppa->support;
 }
-
 static inline int pktproc_check_active(struct pktproc_adaptor *ppa, u32 q_idx)
 {
 	if (!pktproc_check_support(ppa))
@@ -307,31 +263,12 @@ static inline int pktproc_check_active(struct pktproc_adaptor *ppa, u32 q_idx)
 
 	return atomic_read(&ppa->q[q_idx]->active);
 }
-
-static inline int pktproc_stop_napi_poll(struct pktproc_adaptor *ppa, u32 q_idx)
-{
-	if (!pktproc_check_support(ppa))
-		return 0;
-
-	if (!ppa->use_napi)
-		return 0;
-
-	if (!ppa->q[q_idx])
-		return 0;
-
-	atomic_set(&ppa->q[q_idx]->stop_napi_poll, 1);
-
-	return 0;
-}
 #else
 static inline int pktproc_create(struct platform_device *pdev, struct mem_link_device *mld,
-				unsigned long memaddr, u32 memsize) { return 0; }
+				u32 memaddr, u32 memsize) { return 0; }
 static inline int pktproc_init(struct pktproc_adaptor *ppa) { return 0; }
-static inline int pktproc_get_usage(struct pktproc_queue *q) { return 0; }
-static inline int pktproc_get_usage_fore_rear(struct pktproc_queue *q) { return 0; }
 static inline int pktproc_check_support(struct pktproc_adaptor *ppa) { return 0; }
 static inline int pktproc_check_active(struct pktproc_adaptor *ppa, u32 q_idx) { return 0; }
-static inline int pktproc_stop_napi_poll(struct pktproc_adaptor *ppa, u32 q_idx) { return 0; }
 #endif
 
 #endif /* __LINK_RX_PKTPROC_H__ */

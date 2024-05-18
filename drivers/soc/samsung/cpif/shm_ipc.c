@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2014-2019, Samsung Electronics.
  *
@@ -23,9 +22,7 @@
 #include <linux/shm_ipc.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/of_fdt.h>
-#if IS_ENABLED(CONFIG_DEBUG_SNAPSHOT)
-#include <soc/samsung/debug-snapshot.h>
-#endif
+#include <linux/debug-snapshot.h>
 
 #include "modem_utils.h"
 
@@ -44,40 +41,6 @@ struct cp_reserved_mem {
 static int _rmem_count;
 static struct cp_reserved_mem _cp_rmem[MAX_CP_RMEM];
 
-#if defined(MODULE)
-static int cp_rmem_setup_latecall(struct platform_device *pdev)
-{
-	struct device_node *np;
-	struct reserved_mem *rmem;
-	u32 rmem_index = 0;
-	int i;
-
-	for (i = 0; i < MAX_CP_RMEM; i++) {
-		np = of_parse_phandle(pdev->dev.of_node, "memory-region", i);
-		if (!np)
-			break;
-
-		mif_dt_read_u32(np, "rmem_index", rmem_index);
-
-		rmem = of_reserved_mem_lookup(np);
-		if (!rmem) {
-			mif_err("of_reserved_mem_lookup() failed\n");
-			break;
-		}
-
-		_cp_rmem[i].index = rmem_index;
-		_cp_rmem[i].name = (char *)rmem->name;
-		_cp_rmem[i].p_base = rmem->base;
-		_cp_rmem[i].size = rmem->size;
-
-		mif_info("rmem %d %s 0x%08lx 0x%08x\n",
-				_cp_rmem[i].index, _cp_rmem[i].name,
-				_cp_rmem[i].p_base, _cp_rmem[i].size);
-	}
-
-	return 0;
-}
-#else
 static int __init cp_rmem_setup(struct reserved_mem *rmem)
 {
 	const __be32 *prop;
@@ -100,14 +63,14 @@ static int __init cp_rmem_setup(struct reserved_mem *rmem)
 	_rmem_count++;
 
 	mif_info("rmem %d %s 0x%08lx 0x%08x\n",
-			_cp_rmem[be32_to_cpu(prop[0])].index, _cp_rmem[be32_to_cpu(prop[0])].name,
-			_cp_rmem[be32_to_cpu(prop[0])].p_base, _cp_rmem[be32_to_cpu(prop[0])].size);
+			_cp_rmem[be32_to_cpu(prop[0])].index,
+			_cp_rmem[be32_to_cpu(prop[0])].name,
+			_cp_rmem[be32_to_cpu(prop[0])].p_base,
+			_cp_rmem[be32_to_cpu(prop[0])].size);
 
 	return 0;
 }
 RESERVEDMEM_OF_DECLARE(modem_if, "exynos,modem_if", cp_rmem_setup);
-
-#endif
 
 /*
  * Shared memory
@@ -141,7 +104,6 @@ static int cp_shmem_setup(struct device *dev)
 		mif_err("of_get_child_by_name() error:regions\n");
 		return -EINVAL;
 	}
-
 	for_each_child_of_node(regions, child) {
 		if (count >= MAX_CP_SHMEM) {
 			mif_err("_cp_shmem is full for %d\n", count);
@@ -151,29 +113,12 @@ static int cp_shmem_setup(struct device *dev)
 		_cp_shmem[cp_num][shmem_index].index = shmem_index;
 		_cp_shmem[cp_num][shmem_index].cp_num = cp_num;
 		mif_dt_read_string(child, "region,name", _cp_shmem[cp_num][shmem_index].name);
-
 		mif_dt_read_u32(child, "region,rmem", _cp_shmem[cp_num][shmem_index].rmem);
 		rmem_index = _cp_shmem[cp_num][shmem_index].rmem;
-		if (!_cp_rmem[rmem_index].p_base) {
-			mif_err("_cp_rmem[%d].p_base is null\n", rmem_index);
-			return -ENOMEM;
-		}
 		mif_dt_read_u32(child, "region,offset", offset);
-
 		_cp_shmem[cp_num][shmem_index].p_base = _cp_rmem[rmem_index].p_base + offset;
 		mif_dt_read_u32(child, "region,size", _cp_shmem[cp_num][shmem_index].size);
-		if ((_cp_shmem[cp_num][shmem_index].p_base + _cp_shmem[cp_num][shmem_index].size) >
-			(_cp_rmem[rmem_index].p_base + _cp_rmem[rmem_index].size)) {
-			mif_err("%d %d size error 0x%08lx 0x%08x 0x%08lx 0x%08x\n",
-				rmem_index, shmem_index,
-				_cp_shmem[cp_num][shmem_index].p_base,
-				_cp_shmem[cp_num][shmem_index].size,
-				_cp_rmem[rmem_index].p_base, _cp_rmem[rmem_index].size);
-			return -ENOMEM;
-		}
-
-		mif_dt_read_u32_noerr(child, "region,cached",
-				_cp_shmem[cp_num][shmem_index].cached);
+		mif_dt_read_bool(child, "region,cached", _cp_shmem[cp_num][shmem_index].cached);
 		count++;
 	}
 
@@ -222,7 +167,6 @@ static int cp_shmem_check_mem_map_on_cp(struct device *dev)
 	int i;
 	u32 rmem_index = 0;
 	u32 shmem_index = 0;
-	long long base_diff = 0;
 
 	mif_dt_read_u32(dev->of_node, "cp_num", cp_num);
 	base = phys_to_virt(cp_shmem_get_base(cp_num, SHMEM_CP));
@@ -252,8 +196,7 @@ static int cp_shmem_check_mem_map_on_cp(struct device *dev)
 
 	_mem_map_on_cp[cp_num] = 1;
 
-	mif_info("secure_size:0x%08x ns_size:0x%08x count:%d\n",
-			map.secure_size, map.ns_size, map.ns_map_count);
+	mif_info("secure_size:0x%08x ns_size:0x%08x count:%d\n", map.secure_size, map.ns_size, map.ns_map_count);
 	_cp_shmem[cp_num][SHMEM_CP].size = map.secure_size;
 
 	for (i = 0; i < map.ns_map_count; i++) {
@@ -262,7 +205,7 @@ static int cp_shmem_check_mem_map_on_cp(struct device *dev)
 			shmem_index = SHMEM_IPC;
 		else if (!strncmp((const char *)&name, "SSV\0", sizeof(name)))
 			shmem_index = SHMEM_VSS;
-#if IS_ENABLED(CONFIG_SOC_EXYNOS9820)
+#if defined(CONFIG_SOC_EXYNOS9820)
 		else if (!strncmp((const char *)&name, "APV\0", sizeof(name)))
 			shmem_index = SHMEM_VPA;
 #endif
@@ -272,34 +215,15 @@ static int cp_shmem_check_mem_map_on_cp(struct device *dev)
 			shmem_index = SHMEM_L2B;
 		else if (!strncmp((const char *)&name, "PKP\0", sizeof(name)))
 			shmem_index = SHMEM_PKTPROC;
-		else if (!strncmp((const char *)&name, "UKP\0", sizeof(name)))
-			shmem_index = SHMEM_PKTPROC_UL;
 		else
 			continue;
 
 		rmem_index = _cp_shmem[cp_num][shmem_index].rmem;
-		if (!_cp_rmem[rmem_index].p_base) {
-			mif_err("_cp_rmem[%d].p_base is null\n", rmem_index);
-			return -ENOMEM;
-		}
-
-		base_diff = _cp_rmem[rmem_index].p_base - _cp_rmem[0].p_base;
-		_cp_shmem[cp_num][shmem_index].p_base =
-			_cp_rmem[rmem_index].p_base + map.ns_map[i].offset - base_diff;
+		_cp_shmem[cp_num][shmem_index].p_base = _cp_rmem[rmem_index].p_base + map.ns_map[i].offset;
 		_cp_shmem[cp_num][shmem_index].size = map.ns_map[i].size;
-
-		if ((_cp_shmem[cp_num][shmem_index].p_base + _cp_shmem[cp_num][shmem_index].size) >
-			(_cp_rmem[rmem_index].p_base + _cp_rmem[rmem_index].size)) {
-			mif_err("rmem:%d shmem_index:%d size error 0x%08lx 0x%08x 0x%08lx 0x%08x\n",
-				rmem_index, shmem_index,
-				_cp_shmem[cp_num][shmem_index].p_base,
-				_cp_shmem[cp_num][shmem_index].size,
-				_cp_rmem[rmem_index].p_base, _cp_rmem[rmem_index].size);
-			return -ENOMEM;
-		}
-
-		mif_info("rmem:%d shmem_index:%d base:0x%08lx offset:0x%08x size:0x%08x\n",
-				rmem_index, shmem_index, _cp_rmem[rmem_index].p_base,
+		mif_info("index:%d/%d base:0x%08lx offset:0x%08x size:0x%08x\n",
+				shmem_index, rmem_index,
+				_cp_rmem[rmem_index].p_base,
 				map.ns_map[i].offset, map.ns_map[i].size);
 	}
 
@@ -413,8 +337,7 @@ void __iomem *cp_shmem_get_region(u32 cp, u32 idx)
 	if (_cp_shmem[cp][idx].cached)
 		_cp_shmem[cp][idx].v_base = phys_to_virt(_cp_shmem[cp][idx].p_base);
 	else
-		_cp_shmem[cp][idx].v_base = cp_shmem_get_nc_region(_cp_shmem[cp][idx].p_base,
-				_cp_shmem[cp][idx].size);
+		_cp_shmem[cp][idx].v_base = cp_shmem_get_nc_region(_cp_shmem[cp][idx].p_base, _cp_shmem[cp][idx].size);
 
 	return _cp_shmem[cp][idx].v_base;
 }
@@ -467,21 +390,9 @@ static int cp_shmem_probe(struct platform_device *pdev)
 	int ret = 0;
 	u32 use_map_on_cp = 0;
 	int i, j;
-#if IS_ENABLED(CONFIG_DEBUG_SNAPSHOT)
 	bool log_cpmem = true;
-#endif
 
 	mif_info("+++\n");
-
-#if defined(MODULE)
-	if (!_rmem_count) {
-		ret = cp_rmem_setup_latecall(pdev);
-		if (ret) {
-			mif_err("cp_rmem_setup_latecall() error:%d\n", ret);
-			return ret;
-		}
-	}
-#endif
 
 	ret = cp_shmem_setup(dev);
 	if (ret) {
@@ -505,34 +416,20 @@ static int cp_shmem_probe(struct platform_device *pdev)
 			if (!_cp_shmem[i][j].name)
 				continue;
 
-			mif_info("cp_num:%d rmem:%d index:%d %s 0x%08lx 0x%08x %d\n",
-					_cp_shmem[i][j].cp_num, _cp_shmem[i][j].rmem,
-					_cp_shmem[i][j].index, _cp_shmem[i][j].name,
-					_cp_shmem[i][j].p_base, _cp_shmem[i][j].size,
-					_cp_shmem[i][j].cached);
+			mif_info("%d %d %d %s 0x%08lx 0x%08x %d\n",
+				_cp_shmem[i][j].cp_num, _cp_shmem[i][j].rmem, _cp_shmem[i][j].index, _cp_shmem[i][j].name,
+				_cp_shmem[i][j].p_base, _cp_shmem[i][j].size, _cp_shmem[i][j].cached);
 		}
 	}
 
-#if IS_ENABLED(CONFIG_DEBUG_SNAPSHOT)
 	/* Set ramdump for rmem index 0 */
-#if IS_ENABLED(CONFIG_CPIF_CHECK_SJTAG_STATUS)
+#if defined(CONFIG_CPIF_CHECK_SJTAG_STATUS)
 	if (dbg_snapshot_get_sjtag_status() && !dbg_snapshot_get_dpm_status())
 		log_cpmem = false;
 #endif
 	mif_info("cpmem dump on fastboot is %s\n", log_cpmem ? "enabled" : "disabled");
-	if (log_cpmem) {
-		for (i = 0; i < MAX_CP_NUM; i++) {
-			char log_name[40];
-
-			if (!_cp_rmem[i].p_base)
-				continue;
-			snprintf(log_name, sizeof(log_name), "log_cpmem_%d", i);
-			mif_info("%s will be generated after ramdump\n", log_name);
-			dbg_snapshot_add_bl_item_info(log_name,
-					_cp_rmem[i].p_base, _cp_rmem[i].size);
-		}
-	}
-#endif
+	if (log_cpmem)
+		dbg_snapshot_add_bl_item_info("log_cpmem", (u32)_cp_rmem[0].p_base, _cp_rmem[0].size);
 
 	mif_info("---\n");
 
@@ -545,8 +442,8 @@ static int cp_shmem_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id cp_shmem_dt_match[] = {
-	{ .compatible = "samsung,exynos-cp-shmem", },
-	{},
+		{ .compatible = "samsung,exynos-cp-shmem", },
+		{},
 };
 MODULE_DEVICE_TABLE(of, cp_shmem_dt_match);
 

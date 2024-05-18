@@ -17,23 +17,22 @@
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/of_reserved_mem.h>
-#include <soc/samsung/debug-snapshot.h>
+#include <linux/debug-snapshot.h>
 #include <linux/sched/clock.h>
 
+#include <asm/map.h>
 #include <asm/tlbflush.h>
 #include <asm/cacheflush.h>
 
-#if defined(CONFIG_EXYNOS_ADV_TRACER) || defined(CONFIG_EXYNOS_ADV_TRACER_MODULE)
+#ifdef	CONFIG_EXYNOS_ADV_TRACER
 #include <soc/samsung/exynos-adv-tracer-ipc.h>
 #endif
 #include <soc/samsung/exynos-bcm_dbg.h>
 #include <soc/samsung/exynos-bcm_dbg-dt.h>
 #include <soc/samsung/exynos-bcm_dbg-dump.h>
-#if defined(CONFIG_EXYNOS_PD) || defined(CONFIG_EXYNOS_PD_MODULE)
 #include <soc/samsung/exynos-pd.h>
-#endif
 #include <soc/samsung/cal-if.h>
-#if defined(CONFIG_EXYNOS_ITMON) || defined(CONFIG_EXYNOS_ITMON_MODULE)
+#ifdef	CONFIG_EXYNOS_ITMON
 #include <soc/samsung/exynos-itmon.h>
 #endif
 
@@ -41,18 +40,16 @@ static int exynos_bcm_dbg_run(unsigned int bcm_run,
 		struct exynos_bcm_dbg_data *data);
 static int exynos_bcm_dbg_early_init(struct exynos_bcm_dbg_data *data,
 		unsigned int mode);
-static struct exynos_bcm_dump_addr bcm_reserved;
-static struct exynos_bcm_dbg_data *bcm_dbg_data;
-static bool pd_sync_init = false;
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
+static struct exynos_bcm_dbg_data *bcm_dbg_data = NULL;
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
+static struct vm_struct bcm_early_vm;
 static void *bcm_addr;
 static struct bin_system_func *bin_func;
 static struct os_system_func os_func;
 typedef struct bin_system_func*(*start_up_func_t)(void **func);
 #endif
 
-#if defined(CONFIG_EXYNOS_ADV_TRACER) || defined(CONFIG_EXYNOS_ADV_TRACER_MODULE) \
-|| defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
+#if defined(CONFIG_EXYNOS_ADV_TRACER) || defined(CONFIG_EXYNOS_BCM_DBG_GNR)
 static enum exynos_bcm_err_code exynos_bcm_dbg_ipc_err_handle(unsigned int cmd)
 {
 	enum exynos_bcm_err_code err_code;
@@ -95,15 +92,14 @@ static int exynos_bcm_is_running(unsigned int run_state)
 	return 0;
 }
 
-static int __nocfi __exynos_bcm_dbg_ipc_send_data(enum exynos_bcm_dbg_ipc_type ipc_type,
-				struct exynos_bcm_dbg_data *data,
-				unsigned int *cmd)
+static int __exynos_bcm_dbg_ipc_send_data(enum exynos_bcm_dbg_ipc_type ipc_type,
+		struct exynos_bcm_dbg_data *data, unsigned int *cmd)
 {
 	int ret = 0;
-#if defined(CONFIG_EXYNOS_ADV_TRACER) || defined(CONFIG_EXYNOS_ADV_TRACER_MODULE)
+#if defined(CONFIG_EXYNOS_ADV_TRACER)
 	int i = 0;
 	struct adv_tracer_ipc_cmd config;
-#elif defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
+#elif defined(CONFIG_EXYNOS_BCM_DBG_GNR)
 	int i = 0;
 	struct cmd_data config;
 #endif
@@ -118,11 +114,11 @@ static int __nocfi __exynos_bcm_dbg_ipc_send_data(enum exynos_bcm_dbg_ipc_type i
 	}
 
 	bcm_cmd = cmd;
-#if defined(CONFIG_EXYNOS_ADV_TRACER) || defined(CONFIG_EXYNOS_ADV_TRACER_MODULE)
+#if defined(CONFIG_EXYNOS_ADV_TRACER)
 	config.cmd_raw.cmd = BCM_CMD_SET(ipc_type, BCM_CMD_ID_MASK, BCM_CMD_ID_SHIFT);
 	memcpy(&config.buffer[1], bcm_cmd, sizeof(unsigned int) * CMD_DATA_MAX);
 	ret = adv_tracer_ipc_send_data_polling(data->ipc_ch_num, &config);
-#elif defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
+#elif defined(CONFIG_EXYNOS_BCM_DBG_GNR)
 	config.raw_cmd = BCM_CMD_SET(ipc_type, BCM_CMD_ID_MASK, BCM_CMD_ID_SHIFT);
 	memcpy(config.cmd, bcm_cmd, sizeof(unsigned int) * CMD_DATA_MAX);
 	ret = bin_func->send_data(&config);
@@ -130,11 +126,10 @@ static int __nocfi __exynos_bcm_dbg_ipc_send_data(enum exynos_bcm_dbg_ipc_type i
 	if (ret) {
 		BCM_ERR("%s: Failed to send IPC(%d:%u) data to origin\n",
 			__func__, ipc_type, data->ipc_ch_num);
-		dbg_snapshot_expire_watchdog();
 		return ret;
 	}
 
-#if defined(CONFIG_EXYNOS_ADV_TRACER) || defined(CONFIG_EXYNOS_ADV_TRACER_MODULE)
+#if defined(CONFIG_EXYNOS_ADV_TRACER)
 	for (i = 0; i < data->ipc_size; i++)
 		BCM_DBG("%s: received data[%d]: 0x%08x\n",
 				__func__, i, config.buffer[i]);
@@ -142,7 +137,7 @@ static int __nocfi __exynos_bcm_dbg_ipc_send_data(enum exynos_bcm_dbg_ipc_type i
 	memcpy(bcm_cmd, &config.buffer[1], sizeof(unsigned int) * CMD_DATA_MAX);
 
 	ipc_err = exynos_bcm_dbg_ipc_err_handle(config.cmd_raw.cmd);
-#elif defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
+#elif defined(CONFIG_EXYNOS_BCM_DBG_GNR)
 	BCM_DBG("%s: received data raw: 0x%08x\n", __func__, config.raw_cmd);
 	for (i = 0; i < CMD_DATA_MAX; i++)
 		BCM_DBG("%s: received data[%d]: 0x%08x\n",
@@ -161,8 +156,7 @@ static int __nocfi __exynos_bcm_dbg_ipc_send_data(enum exynos_bcm_dbg_ipc_type i
 }
 
 int exynos_bcm_dbg_ipc_send_data(enum exynos_bcm_dbg_ipc_type ipc_type,
-				struct exynos_bcm_dbg_data *data,
-				unsigned int *cmd)
+		struct exynos_bcm_dbg_data *data, unsigned int *cmd)
 {
 	int ret;
 	unsigned long flags;
@@ -180,7 +174,7 @@ int exynos_bcm_dbg_ipc_send_data(enum exynos_bcm_dbg_ipc_type ipc_type,
 }
 EXPORT_SYMBOL(exynos_bcm_dbg_ipc_send_data);
 
-#if defined(CONFIG_EXYNOS_ADV_TRACER) || defined(CONFIG_EXYNOS_ADV_TRACER_MODULE)
+#ifdef CONFIG_EXYNOS_ADV_TRACER
 static int adv_tracer_bcm_dbg_handler(struct adv_tracer_ipc_cmd *cmd, unsigned int len)
 {
 	return 0;
@@ -221,7 +215,6 @@ void exynos_bcm_dbg_ipc_channel_release(struct exynos_bcm_dbg_data *data)
 }
 #endif
 
-#if defined(CONFIG_EXYNOS_PD) || defined(CONFIG_EXYNOS_PD_MODULE)
 static int exynos_bcm_dbg_early_pd_sync(unsigned int cal_pdid, bool on)
 {
 	unsigned int cmd[4] = {0, };
@@ -268,8 +261,6 @@ out:
 
 	return ret;
 }
-#endif
-
 int exynos_bcm_dbg_pd_sync(unsigned int cal_pdid, bool on)
 {
 	unsigned int cmd[4] = {0, };
@@ -277,9 +268,9 @@ int exynos_bcm_dbg_pd_sync(unsigned int cal_pdid, bool on)
 	struct exynos_bcm_pd_info *bcm_pd_info = NULL;
 	int i, ret = 0;
 
-	if (!bcm_dbg_data || !pd_sync_init) {
+	if (!bcm_dbg_data || !bcm_dbg_data->pd_sync_init) {
 		BCM_DBG("%s: do not pd_sync_init(%s)\n", __func__,
-				pd_sync_init ? "true" : "false");
+				bcm_dbg_data->pd_sync_init ? "true" : "false");
 		return 0;
 	}
 
@@ -326,17 +317,15 @@ EXPORT_SYMBOL(exynos_bcm_dbg_pd_sync);
 
 static int exynos_bcm_dbg_pd_sync_init(struct exynos_bcm_dbg_data *data)
 {
-	int ret = 0;
-#if defined(CONFIG_EXYNOS_PD) || defined(CONFIG_EXYNOS_PD_MODULE)
 	struct exynos_pm_domain *exynos_pd;
 	unsigned int pd_index, pd_size;
+	int ret = 0;
 
-	if (pd_sync_init) {
+	if (data->pd_sync_init) {
 		BCM_ERR("%s: already pd_sync_init(%s)\n",
-			__func__, pd_sync_init ? "true" : "false");
+			__func__, data->pd_sync_init ? "true" : "false");
 		return -EINVAL;
 	}
-
 
 	pd_size = data->pd_size;
 	for (pd_index = 0; pd_index < pd_size; pd_index++) {
@@ -362,23 +351,20 @@ static int exynos_bcm_dbg_pd_sync_init(struct exynos_bcm_dbg_data *data)
 		}
 	}
 
-	exynos_cal_pd_bcm_sync = exynos_bcm_dbg_pd_sync;
-	pd_sync_init = true;
-#endif
+	data->pd_sync_init = true;
 
 	return ret;
 }
 
 static int exynos_bcm_dbg_pd_sync_exit(struct exynos_bcm_dbg_data *data)
 {
-	int ret = 0;
-#if defined(CONFIG_EXYNOS_PD) || defined(CONFIG_EXYNOS_PD_MODULE)
 	struct exynos_pm_domain *exynos_pd;
 	unsigned int pd_index, pd_size;
+	int ret = 0;
 
-	if (!pd_sync_init) {
+	if (!data->pd_sync_init) {
 		BCM_ERR("%s: already pd_sync_exit(%s)\n",
-			__func__, pd_sync_init ? "true" : "false");
+			__func__, data->pd_sync_init ? "true" : "false");
 		return -EINVAL;
 	}
 
@@ -401,8 +387,7 @@ static int exynos_bcm_dbg_pd_sync_exit(struct exynos_bcm_dbg_data *data)
 		}
 	}
 
-	pd_sync_init = false;
-#endif
+	data->pd_sync_init = false;
 
 	return ret;
 }
@@ -538,21 +523,21 @@ bool exynos_bcm_calc_enable(int enable)
 			BCM_ERR("%s: failed to early bcm initialize\n", __func__);
 	}
 
-	BCM_INFO("%s: %s\n", __func__, bcm_calc->enable? "enable" : "disable");
+	BCM_INFO("%s: %s\n", __func__, bcm_calc->enable ? "enable" : "disable");
 
 	return bcm_calc->enable;
 }
 EXPORT_SYMBOL(exynos_bcm_calc_enable);
 
-void exynos_bcm_get_data(u64 *freq_stat0, u64 *freq_stat1, u64
-		*freq_stat2, u64 *freq_stat3)
+void exynos_bcm_get_data(u64 *freq_stats0, u64 *freq_stats1, u64
+		*freq_stats2, u64 *freq_stats3)
 {
 	struct exynos_bcm_calc *bcm_calc = bcm_dbg_data->bcm_calc;
 	int i;
 
-	*freq_stat0 = 0;
-	*freq_stat1 = 0;
-	*freq_stat2 = 0;
+	*freq_stats0 = 0;
+	*freq_stats1 = 0;
+	*freq_stats2 = 0;
 
 	if (bcm_calc &&	bcm_calc->sample_time) {
 		mutex_lock(&bcm_calc->lock);
@@ -561,18 +546,19 @@ void exynos_bcm_get_data(u64 *freq_stat0, u64 *freq_stat1, u64
 			exynos_bcm_find_dump_data(bcm_dbg_data);
 
 			for (i = 0; i < bcm_calc->num_ip - 1; i++) {
-				*freq_stat0 +=
+				*freq_stats0 +=
 					(bcm_calc->acc_data[i].pmcnt[0]	+ bcm_calc->acc_data[i].pmcnt[1])
 					* 1000 * bcm_calc->bus_width[i]	* bcm_calc->ip_cnt[i];
 			}
 
-			*freq_stat1 =
-				bcm_calc->acc_data[0].pmcnt[0];
+			*freq_stats1 =
+				bcm_calc->acc_data[0].pmcnt[0]
+				+ bcm_calc->acc_data[1].pmcnt[0];
 
-			*freq_stat2 =
-				bcm_calc->acc_data[0].pmcnt[6];
-
-			*freq_stat3 =
+			*freq_stats2 =
+				bcm_calc->acc_data[0].pmcnt[6]
+				+ bcm_calc->acc_data[1].pmcnt[6];
+			*freq_stats3 =
 				(bcm_calc->acc_data[3].pmcnt[0] + bcm_calc->acc_data[3].pmcnt[1])
 				* 1000 * bcm_calc->bus_width[3] * bcm_calc->ip_cnt[3];
 
@@ -580,24 +566,12 @@ void exynos_bcm_get_data(u64 *freq_stat0, u64 *freq_stat1, u64
 		}
 		mutex_unlock(&bcm_calc->lock);
 	}
-	*freq_stat0 = *freq_stat0 >> 20;
-	*freq_stat3 = *freq_stat3 >> 20;
+	*freq_stats0 = *freq_stats0 >> 20;
+	*freq_stats3 = *freq_stats3 >> 20;
 
 	return;
 }
 EXPORT_SYMBOL(exynos_bcm_get_data);
-
-u64 exynos_bcm_get_ccnt(unsigned int idx)
-{
-	struct exynos_bcm_calc *bcm_calc = bcm_dbg_data->bcm_calc;
-	u64 ret = -EINVAL;
-
-	if (idx < bcm_calc->num_ip)
-		ret = bcm_calc->acc_data[idx].ccnt;
-
-	return ret;
-}
-EXPORT_SYMBOL(exynos_bcm_get_ccnt);
 
 static void exynos_bcm_dbg_set_base_info(
 				struct exynos_bcm_ipc_base_info *ipc_base_info,
@@ -970,7 +944,7 @@ static int exynos_bcm_dbg_run_ctrl(struct exynos_bcm_ipc_base_info *ipc_base_inf
 			cmd[1] = low_ktime;
 			cmd[2] = high_ktime;
 
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
 			if (data->bcm_mode != BCM_MODE_USERCTRL)
 				hrtimer_try_to_cancel(&data->bcm_hrtimer);
 #endif
@@ -990,7 +964,7 @@ static int exynos_bcm_dbg_run_ctrl(struct exynos_bcm_ipc_base_info *ipc_base_inf
 		*bcm_run = run;
 	} else if (ipc_base_info->direction == BCM_EVT_SET) {
 		data->bcm_run_state = run;
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
 		if (run == BCM_RUN && data->bcm_mode != BCM_MODE_USERCTRL)
 			hrtimer_start(&data->bcm_hrtimer,
 				ms_to_ktime(data->period), HRTIMER_MODE_REL);
@@ -1076,7 +1050,7 @@ static int exynos_bcm_dbg_period_ctrl(struct exynos_bcm_ipc_base_info *ipc_base_
 		*bcm_period = period;
 	}
 
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
 	data->period = period;
 #endif
 out:
@@ -1146,7 +1120,7 @@ static int exynos_bcm_dbg_mode_ctrl(struct exynos_bcm_ipc_base_info *ipc_base_in
 		*bcm_mode = mode;
 	}
 
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
 	data->bcm_mode = mode;
 #endif
 
@@ -1187,7 +1161,7 @@ static int exynos_bcm_dbg_str_ctrl(struct exynos_bcm_ipc_base_info *ipc_base_inf
 		cmd[0] |= BCM_CMD_SET(suspend, BCM_ONE_BIT_MASK,
 					BCM_EVT_STR_STATE_SHIFT);
 
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
 		if (suspend && data->bcm_mode != BCM_MODE_USERCTRL)
 			hrtimer_try_to_cancel(&data->bcm_hrtimer);
 #endif
@@ -1205,7 +1179,7 @@ static int exynos_bcm_dbg_str_ctrl(struct exynos_bcm_ipc_base_info *ipc_base_inf
 					BCM_EVT_STR_STATE_SHIFT);
 		*ap_suspend = suspend;
 	}
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
 	if (ipc_base_info->direction == BCM_EVT_SET) {
 		if (!suspend && data->bcm_mode != BCM_MODE_USERCTRL)
 			hrtimer_start(&data->bcm_hrtimer,
@@ -1282,6 +1256,7 @@ out:
 	return ret;
 }
 
+#ifdef CONFIG_DEBUG_SNAPSHOT
 static int exynos_bcm_dbg_dump_addr_ctrl(struct exynos_bcm_ipc_base_info *ipc_base_info,
 					struct exynos_bcm_dump_addr *dump_addr,
 					struct exynos_bcm_dbg_data *data)
@@ -1289,7 +1264,7 @@ static int exynos_bcm_dbg_dump_addr_ctrl(struct exynos_bcm_ipc_base_info *ipc_ba
 	unsigned int cmd[4] = {0, 0, 0, 0};
 	int ret = 0;
 	unsigned long flags;
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
 	u64 v_addr;
 #endif
 
@@ -1319,7 +1294,7 @@ static int exynos_bcm_dbg_dump_addr_ctrl(struct exynos_bcm_ipc_base_info *ipc_ba
 		if (ret)
 			goto out;
 
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
 		v_addr = (u64)dump_addr->v_addr;
 		if (!v_addr || !dump_addr->buff_size) {
 			BCM_ERR("%s: No dump address info: v_addr(%llu), buff_size(0x%08x)\n",
@@ -1357,6 +1332,7 @@ out:
 
 	return ret;
 }
+#endif
 
 static int exynos_bcm_dbg_glb_auto_ctrl(struct exynos_bcm_ipc_base_info *ipc_base_info,
 					unsigned int *glb_auto_en,
@@ -1410,123 +1386,6 @@ out:
 	return ret;
 }
 
-static int exynos_bcm_dbg_histogram_id(struct exynos_bcm_ipc_base_info *ipc_base_info,
-					unsigned int *id0, unsigned int *id1,
-					unsigned int bcm_ip_index,
-					struct exynos_bcm_dbg_data *data)
-{
-	unsigned int cmd[4] = {0, 0, 0, 0};
-	int ret = 0;
-	unsigned long flags;
-
-	spin_lock_irqsave(&data->lock, flags);
-
-	if (!ipc_base_info) {
-		BCM_ERR("%s: pointer is NULL\n", __func__);
-		ret = -EINVAL;
-		goto out;
-	}
-
-	exynos_bcm_dbg_set_base_cmd(cmd, ipc_base_info);
-
-	if (ipc_base_info->event_id != BCM_EVT_HISTOGRAM_ID) {
-		BCM_ERR("%s: Invalid Event ID(%d)\n", __func__,
-					ipc_base_info->event_id);
-		ret = -EINVAL;
-		goto out;
-	}
-
-	if (ipc_base_info->ip_range == BCM_EACH)
-		cmd[0] |= BCM_CMD_SET(bcm_ip_index, BCM_IP_MASK, BCM_IP_SHIFT);
-
-	if (ipc_base_info->direction == BCM_EVT_SET) {
-		/*
-		 * check bcm running state
-		 * When bcm is running, value can not set
-		 */
-		ret = exynos_bcm_is_running(data->bcm_run_state);
-		if (ret)
-			goto out;
-
-		cmd[1] = *id0;
-		cmd[2] = *id1;
-	}
-
-	/* send command for BCM histogram config */
-	ret = __exynos_bcm_dbg_ipc_send_data(IPC_BCM_DBG_EVENT, data, cmd);
-	if (ret) {
-		BCM_ERR("%s: Failed send data\n", __func__);
-		goto out;
-	}
-
-	if (ipc_base_info->direction == BCM_EVT_GET) {
-		*id0 = cmd[1];
-		*id1 = cmd[2];
-	}
-
-out:
-	spin_unlock_irqrestore(&data->lock, flags);
-
-	return ret;
-}
-
-static int exynos_bcm_dbg_histogram_config(struct exynos_bcm_ipc_base_info *ipc_base_info,
-					unsigned int *histogram_config,
-					unsigned int bcm_ip_index,
-					struct exynos_bcm_dbg_data *data)
-{
-	unsigned int cmd[4] = {0, 0, 0, 0};
-	int ret = 0;
-	unsigned long flags;
-
-	spin_lock_irqsave(&data->lock, flags);
-
-	if (!ipc_base_info) {
-		BCM_ERR("%s: pointer is NULL\n", __func__);
-		ret = -EINVAL;
-		goto out;
-	}
-
-	exynos_bcm_dbg_set_base_cmd(cmd, ipc_base_info);
-
-	if (ipc_base_info->event_id != BCM_EVT_HISTOGRAM_CONFIG) {
-		BCM_ERR("%s: Invalid Event ID(%d)\n", __func__,
-					ipc_base_info->event_id);
-		ret = -EINVAL;
-		goto out;
-	}
-
-	if (ipc_base_info->ip_range == BCM_EACH)
-		cmd[0] |= BCM_CMD_SET(bcm_ip_index, BCM_IP_MASK, BCM_IP_SHIFT);
-
-	if (ipc_base_info->direction == BCM_EVT_SET) {
-		/*
-		 * check bcm running state
-		 * When bcm is running, value can not set
-		 */
-		ret = exynos_bcm_is_running(data->bcm_run_state);
-		if (ret)
-			goto out;
-
-		cmd[1] = *histogram_config;
-	}
-
-	/* send command for BCM histogram config */
-	ret = __exynos_bcm_dbg_ipc_send_data(IPC_BCM_DBG_EVENT, data, cmd);
-	if (ret) {
-		BCM_ERR("%s: Failed send data\n", __func__);
-		goto out;
-	}
-
-	if (ipc_base_info->direction == BCM_EVT_GET)
-		*histogram_config = cmd[1];
-
-out:
-	spin_unlock_irqrestore(&data->lock, flags);
-
-	return ret;
-}
-
 static int exynos_bcm_dbg_early_init(struct exynos_bcm_dbg_data *data,
 		unsigned int mode)
 {
@@ -1545,15 +1404,13 @@ static int exynos_bcm_dbg_early_init(struct exynos_bcm_dbg_data *data,
 	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_PRE_DEFINE,
 					BCM_EVT_SET, BCM_ALL);
 
-	if (mode == DBG_MODE) {
+	if (mode == DBG_MODE)
 		event = data->default_define_event;
-	} else if (mode == PERF_MODE) {
-		mutex_lock(&data->bcm_calc->lock);
+	else if (mode == PERF_MODE)
 		event = data->bcm_calc->perf_define_event;
-		mutex_unlock(&data->bcm_calc->lock);
-	}
 
 	bcm_event.index = data->define_event[event].index;
+
 	for (ev_cnt = 0; ev_cnt < data->bcm_cnt_nr; ev_cnt++)
 		bcm_event.event[ev_cnt] =
 			data->define_event[event].event[ev_cnt];
@@ -1679,16 +1536,14 @@ static int exynos_bcm_dbg_early_init(struct exynos_bcm_dbg_data *data,
 	}
 
 	/* glb_auto mode set */
-	if (data->glb_auto_en) {
-		exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_GLBAUTO_CONT,
-						BCM_EVT_SET, 0);
+	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_GLBAUTO_CONT,
+					BCM_EVT_SET, 0);
 
-		ret = exynos_bcm_dbg_glb_auto_ctrl(&ipc_base_info,
-						&data->glb_auto_en, data);
-		if (ret) {
-			BCM_ERR("%s: failed set mode\n", __func__);
-			return ret;
-		}
+	ret = exynos_bcm_dbg_glb_auto_ctrl(&ipc_base_info,
+					&data->glb_auto_en, data);
+	if (ret) {
+		BCM_ERR("%s: failed set mode\n", __func__);
+		return ret;
 	}
 
 	return 0;
@@ -1715,33 +1570,13 @@ static int exynos_bcm_dbg_run(unsigned int bcm_run,
 void exynos_bcm_dbg_start(void)
 {
 	int ret;
-	int enable;
 
 	if (!bcm_dbg_data) {
-		BCM_ERR("%s: bcm_dbg_data is not ready!\n", __func__);
+		BCM_INFO("%s: bcm_dbg_data is not ready!\n", __func__);
 		return;
 	}
 
-	mutex_lock(&bcm_dbg_data->bcm_calc->lock);
-	enable = bcm_dbg_data->bcm_calc->enable;
-	mutex_unlock(&bcm_dbg_data->bcm_calc->lock);
-
-	if (enable) {
-		BCM_INFO("%s: bcm_calc is enabled!\n", __func__);
-
-		ret = exynos_bcm_dbg_run(BCM_STOP, bcm_dbg_data);
-		if (ret) {
-			BCM_ERR("%s: failed to bcm start\n", __func__);
-			return;
-		}
-#if !(defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE))
-		ret = exynos_bcm_dbg_early_init(bcm_dbg_data, DBG_MODE);
-		if (ret)
-			BCM_ERR("%s: failed to early bcm initialize\n",	__func__);
-#endif
-	}
-
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
 	if (!bcm_dbg_data->bcm_load_bin) {
 		ret = exynos_bcm_dbg_load_bin();
 		if (ret) {
@@ -1764,18 +1599,19 @@ EXPORT_SYMBOL(exynos_bcm_dbg_start);
 void exynos_bcm_dbg_stop(unsigned int bcm_stop_owner)
 {
 	int ret;
-	int enable;
 
 	if (!bcm_dbg_data) {
-		BCM_ERR("%s: bcm_dbg_data is not ready!\n", __func__);
+		BCM_INFO("%s: bcm_dbg_data is not ready!\n", __func__);
 		return;
 	}
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
+
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
 	if (!bcm_dbg_data->bcm_load_bin) {
-		BCM_ERR("BCM bin has not been loaded yet!!\n");
+		BCM_INFO("BCM bin has not been loaded yet!!\n");
 		return;
 	}
 #endif
+
 	if (bcm_stop_owner >= STOP_OWNER_MAX) {
 		BCM_ERR("Invalid stop owner (%u)\n", bcm_stop_owner);
 		return;
@@ -1792,22 +1628,10 @@ void exynos_bcm_dbg_stop(unsigned int bcm_stop_owner)
 		return;
 	}
 
-	if (bcm_stop_owner != PANIC_HANDLE) {
-		mutex_lock(&bcm_dbg_data->bcm_calc->lock);
-		enable = bcm_dbg_data->bcm_calc->enable;
-		mutex_unlock(&bcm_dbg_data->bcm_calc->lock);
+	if (bcm_dbg_data->bcm_calc->enable && bcm_stop_owner != PANIC_HANDLE) {
 		/* restart perf mode after finishing dbg */
-		if (enable) {
-			ret = exynos_bcm_dbg_early_init(bcm_dbg_data, PERF_MODE);
-			if (ret)
-				BCM_ERR("%s: failed to early bcm initialize\n", __func__);
-
-			exynos_bcm_dbg_run(BCM_RUN, bcm_dbg_data);
-			if (ret) {
-				BCM_ERR("%s: failed to bcm start\n", __func__);
-				return;
-			}
-		}
+		bcm_dbg_data->bcm_calc->enable = 0;
+		exynos_bcm_calc_enable(1);
 	}
 
 	BCM_INFO("%s\n", __func__);
@@ -1833,18 +1657,14 @@ static int exynos_bcm_dbg_str(unsigned int suspend,
 }
 
 /* SYSFS Interface */
-static ssize_t show_bcm_dbg_data_pd(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_bcm_dbg_data_pd(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	int i;
 	ssize_t count = 0;
-
-	if (off > 0)
-		return 0;
 
 	count += snprintf(buf, PAGE_SIZE, "=== IPC node info ===\n");
 
@@ -1856,7 +1676,7 @@ static ssize_t show_bcm_dbg_data_pd(struct file *fp, struct kobject *kobj,
 	count += snprintf(buf + count, PAGE_SIZE,
 				"pd_size: %u, pd_sync_init: %s\n",
 				data->pd_size,
-				pd_sync_init ? "true" : "false");
+				data->pd_sync_init ? "true" : "false");
 
 	for (i = 0; i < data->pd_size; i++)
 		count += snprintf(buf + count, PAGE_SIZE,
@@ -1868,18 +1688,14 @@ static ssize_t show_bcm_dbg_data_pd(struct file *fp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t show_bcm_dbg_data_df_event(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_bcm_dbg_data_df_event(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	int i, j;
 	ssize_t count = 0;
-
-	if (off > 0)
-		return 0;
 
 	count += snprintf(buf + count, PAGE_SIZE,
 				"\n=== Pre-defined Event info ===\n");
@@ -1902,18 +1718,14 @@ static ssize_t show_bcm_dbg_data_df_event(struct file *fp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t show_bcm_dbg_data_df_filter(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_bcm_dbg_data_df_filter(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	int i, j;
 	ssize_t count = 0;
-
-	if (off > 0)
-		return 0;
 
 	count += snprintf(buf + count, PAGE_SIZE, "\n=== Filter ID info ===\n");
 	for (i = 0; i < data->define_event_max; i++) {
@@ -1961,18 +1773,14 @@ static ssize_t show_bcm_dbg_data_df_filter(struct file *fp, struct kobject *kobj
 	return count;
 }
 
-static ssize_t show_bcm_dbg_data_df_sample(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_bcm_dbg_data_df_sample(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	int i, j;
 	ssize_t count = 0;
-
-	if (off > 0)
-		return 0;
 
 	count += snprintf(buf + count, PAGE_SIZE, "\n=== Sample ID info ===\n");
 	for (i = 0; i < data->define_event_max; i++) {
@@ -1995,72 +1803,54 @@ static ssize_t show_bcm_dbg_data_df_sample(struct file *fp, struct kobject *kobj
 	return count;
 }
 
-static ssize_t show_bcm_dbg_data_df_attr(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_bcm_dbg_data_df_attr(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
+	int i;
 	ssize_t count = 0;
-	static int ip_cnt = 0;
 
-	if (ip_cnt >= data->bcm_ip_nr) {
-		ip_cnt = 0;
-		return 0;
-	}
-
-	if (off == 0) {
-		count += snprintf(buf + count, PAGE_SIZE, "\n=== Ctrl Attr info ===\n");
-		count += snprintf(buf + count, PAGE_SIZE, "Initial BCM run: %s\n",
+	count += snprintf(buf + count, PAGE_SIZE, "\n=== Ctrl Attr info ===\n");
+	count += snprintf(buf + count, PAGE_SIZE, "Initial BCM run: %s\n",
 				data->initial_bcm_run ? "true" : "false");
-		count += snprintf(buf + count, PAGE_SIZE,
+	count += snprintf(buf + count, PAGE_SIZE,
 				"Initial monitor period: %u msec\n",
 				data->initial_period);
-		count += snprintf(buf + count, PAGE_SIZE, "Initial BCM mode: %u\n",
+	count += snprintf(buf + count, PAGE_SIZE, "Initial BCM mode: %u\n",
 				data->initial_bcm_mode);
-		count += snprintf(buf + count, PAGE_SIZE, "Initial Run IPs\n");
-	}
+	count += snprintf(buf + count, PAGE_SIZE, "Initial Run IPs\n");
 
-	do {
+	for (i = 0; i < data->bcm_ip_nr; i++)
 		count += snprintf(buf + count, PAGE_SIZE,
-				" BCM IP[%d]: %s\n", ip_cnt,
-				data->initial_run_ip[ip_cnt] ? "true" : "false");
-		ip_cnt++;
-	} while ((ip_cnt < data->bcm_ip_nr) && (ip_cnt % data->bcm_ip_print_nr));
+				" BCM IP[%d]: %s\n", i,
+				data->initial_run_ip[i] ? "true" : "false");
 
 	return count;
 }
 
-static ssize_t show_get_event(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_get_event(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	struct exynos_bcm_ipc_base_info ipc_base_info;
 	struct exynos_bcm_event bcm_event;
 	ssize_t count = 0;
-	int ev_cnt, ret;
-	static int ip_cnt = 0;
-
-	if (ip_cnt >= data->bcm_ip_nr) {
-		ip_cnt = 0;
-		return 0;
-	}
+	int ip_cnt, ev_cnt, ret;
 
 	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_EVENT,
 					BCM_EVT_GET, BCM_EACH);
 
-	do {
+	for (ip_cnt = 0; ip_cnt < data->bcm_ip_nr; ip_cnt++) {
 		ret = exynos_bcm_dbg_event_ctrl(&ipc_base_info, &bcm_event,
 						ip_cnt, data);
 		if (ret) {
-			BCM_ERR("%s: failed get event(ip:%d)\n",
-					__func__, ip_cnt);
-			ip_cnt = 0;
-			return ret;
+			count += snprintf(buf + count, PAGE_SIZE,
+					"failed get event(ip:%d)\n", ip_cnt);
+			return count;
 		}
 
 		count += snprintf(buf + count, PAGE_SIZE,
@@ -2070,23 +1860,18 @@ static ssize_t show_get_event(struct file *fp, struct kobject *kobj,
 			count += snprintf(buf + count, PAGE_SIZE,
 					" (0x%02x),", bcm_event.event[ev_cnt]);
 		count += snprintf(buf + count, PAGE_SIZE, "\n");
-		ip_cnt++;
-	} while ((ip_cnt < data->bcm_ip_nr) && (ip_cnt % data->bcm_ip_print_nr));
+	}
 
 	return count;
 }
 
-static ssize_t show_event_ctrl_help(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_event_ctrl_help(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	ssize_t count = 0;
-
-	if (off > 0)
-		return 0;
 
 	/* help store_event_ctrl */
 	count += snprintf(buf + count, PAGE_SIZE, "\n= event_ctrl set help =\n");
@@ -2114,10 +1899,10 @@ static ssize_t show_event_ctrl_help(struct file *fp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t store_event_ctrl(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t store_event_ctrl(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
@@ -2128,9 +1913,6 @@ static ssize_t store_event_ctrl(struct file *fp, struct kobject *kobj,
 	unsigned int event_id, defined_index;
 	unsigned int *event;
 	int ev_cnt, dfd_cnt, ret;
-
-	if (off != 0)
-		return size;
 
 	event = kzalloc(sizeof(int) * data->bcm_cnt_nr, GFP_KERNEL);
 	if (event == NULL) {
@@ -2207,78 +1989,61 @@ static ssize_t store_event_ctrl(struct file *fp, struct kobject *kobj,
 	}
 
 	kfree(event);
-	return size;
+	return count;
 }
 
-static ssize_t show_get_filter_id(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_get_filter_id(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	struct exynos_bcm_ipc_base_info ipc_base_info;
 	struct exynos_bcm_filter_id filter_id;
 	ssize_t count = 0;
-	int ret;
-	static int ip_cnt = 0;
-
-	if (ip_cnt >= data->bcm_ip_nr) {
-		ip_cnt = 0;
-		return 0;
-	}
+	int ip_cnt, ret;
 
 	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_EVENT_FLT_ID,
 					BCM_EVT_GET, BCM_EACH);
 
-	do {
+	for (ip_cnt = 0; ip_cnt < data->bcm_ip_nr; ip_cnt++) {
 		ret = exynos_bcm_dbg_filter_id_ctrl(&ipc_base_info,
 						&filter_id, ip_cnt, data);
 		if (ret) {
-			BCM_ERR("%s: failed get filter id(ip:%d)\n",
-					__func__, ip_cnt);
-			ip_cnt = 0;
-			return ret;
+			count += snprintf(buf + count, PAGE_SIZE,
+					"failed get filter id(ip:%d)\n", ip_cnt);
+			return count;
 		}
 
 		count += snprintf(buf + count, PAGE_SIZE,
 				"bcm[%2d]: mask(0x%08x), value(0x%08x)\n",
 				ip_cnt, filter_id.sm_id_mask, filter_id.sm_id_value);
-		ip_cnt++;
-	} while ((ip_cnt < data->bcm_ip_nr) && (ip_cnt % data->bcm_ip_print_nr));
+	}
 
 	return count;
 }
 
-static ssize_t show_get_filter_id_active(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_get_filter_id_active(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	struct exynos_bcm_ipc_base_info ipc_base_info;
 	struct exynos_bcm_filter_id filter_id;
 	ssize_t count = 0;
-	int ev_cnt, ret;
-	static int ip_cnt = 0;
-
-	if (ip_cnt >= data->bcm_ip_nr) {
-		ip_cnt = 0;
-		return 0;
-	}
+	int ip_cnt, ev_cnt, ret;
 
 	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_EVENT_FLT_ID,
 					BCM_EVT_GET, BCM_EACH);
 
-	do {
+	for (ip_cnt = 0; ip_cnt < data->bcm_ip_nr; ip_cnt++) {
 		ret = exynos_bcm_dbg_filter_id_ctrl(&ipc_base_info,
 						&filter_id, ip_cnt, data);
 		if (ret) {
-			BCM_ERR("%s: failed get filter id(ip:%d)\n",
-					__func__, ip_cnt);
-			ip_cnt = 0;
-			return ret;
+			count += snprintf(buf + count, PAGE_SIZE,
+					"failed get filter id(ip:%d)\n", ip_cnt);
+			return count;
 		}
 
 		count += snprintf(buf + count, PAGE_SIZE, "bcm[%2d]:", ip_cnt);
@@ -2287,23 +2052,18 @@ static ssize_t show_get_filter_id_active(struct file *fp, struct kobject *kobj,
 					" ev%d %u,", ev_cnt,
 					filter_id.sm_id_active[ev_cnt]);
 		count += snprintf(buf + count, PAGE_SIZE, "\n");
-		ip_cnt++;
-	} while ((ip_cnt < data->bcm_ip_nr) && (ip_cnt % data->bcm_ip_print_nr));
+	}
 
 	return count;
 }
 
-static ssize_t show_filter_id_ctrl_help(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_filter_id_ctrl_help(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	ssize_t count = 0;
-
-	if (off > 0)
-		return 0;
 
 	/* help store_filter_id_ctrl */
 	count += snprintf(buf + count, PAGE_SIZE, "\n= filter_id_ctrl set help =\n");
@@ -2338,10 +2098,10 @@ static ssize_t show_filter_id_ctrl_help(struct file *fp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t store_filter_id_ctrl(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t store_filter_id_ctrl(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
@@ -2353,9 +2113,6 @@ static ssize_t store_filter_id_ctrl(struct file *fp, struct kobject *kobj,
 	unsigned int sm_id_mask, sm_id_value;
 	unsigned int *sm_id_active;
 	int ev_cnt, ret;
-
-	if (off != 0)
-		return size;
 
 	sm_id_active = kzalloc(sizeof(int) * data->bcm_cnt_nr, GFP_KERNEL);
 	if (sm_id_active == NULL) {
@@ -2433,38 +2190,30 @@ static ssize_t store_filter_id_ctrl(struct file *fp, struct kobject *kobj,
 	}
 
 	kfree(sm_id_active);
-	return size;
+	return count;
 }
 
-static ssize_t show_get_filter_others(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_get_filter_others(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	struct exynos_bcm_ipc_base_info ipc_base_info;
 	struct exynos_bcm_filter_others filter_others;
 	ssize_t count = 0;
-	int othr_cnt, ret;
-	static int ip_cnt = 0;
-
-	if (ip_cnt >= data->bcm_ip_nr) {
-		ip_cnt = 0;
-		return 0;
-	}
+	int ip_cnt, othr_cnt, ret;
 
 	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_EVENT_FLT_OTHERS,
 					BCM_EVT_GET, BCM_EACH);
 
-	do {
+	for (ip_cnt = 0; ip_cnt < data->bcm_ip_nr; ip_cnt++) {
 		ret = exynos_bcm_dbg_filter_others_ctrl(&ipc_base_info,
 					&filter_others, ip_cnt, data);
 		if (ret) {
-			BCM_ERR("%s: failed get filter others(ip:%d)\n",
-					__func__, ip_cnt);
-			ip_cnt = 0;
-			return ret;
+			count += snprintf(buf + count, PAGE_SIZE,
+					"failed get filter others(ip:%d)\n", ip_cnt);
+			return count;
 		}
 
 		count += snprintf(buf + count, PAGE_SIZE, "bcm[%2d]:", ip_cnt);
@@ -2475,41 +2224,32 @@ static ssize_t show_get_filter_others(struct file *fp, struct kobject *kobj,
 					othr_cnt, filter_others.sm_other_mask[othr_cnt],
 					othr_cnt, filter_others.sm_other_value[othr_cnt]);
 		count += snprintf(buf + count, PAGE_SIZE, "\n");
-		ip_cnt++;
-	} while ((ip_cnt < data->bcm_ip_nr) && (ip_cnt % data->bcm_ip_print_nr));
+	}
 
 	return count;
 }
 
-static ssize_t show_get_filter_others_active(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_get_filter_others_active(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	struct exynos_bcm_ipc_base_info ipc_base_info;
 	struct exynos_bcm_filter_others filter_others;
 	ssize_t count = 0;
-	int ev_cnt, ret;
-	static int ip_cnt = 0;
-
-	if (ip_cnt >= data->bcm_ip_nr) {
-		ip_cnt = 0;
-		return 0;
-	}
+	int ip_cnt, ev_cnt, ret;
 
 	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_EVENT_FLT_OTHERS,
 					BCM_EVT_GET, BCM_EACH);
 
-	do {
+	for (ip_cnt = 0; ip_cnt < data->bcm_ip_nr; ip_cnt++) {
 		ret = exynos_bcm_dbg_filter_others_ctrl(&ipc_base_info,
 					&filter_others, ip_cnt, data);
 		if (ret) {
-			BCM_ERR("%s: failed get filter others(ip:%d)\n",
-					__func__, ip_cnt);
-			ip_cnt = 0;
-			return ret;
+			count += snprintf(buf + count, PAGE_SIZE,
+					"failed get filter others(ip:%d)\n", ip_cnt);
+			return count;
 		}
 
 		count += snprintf(buf + count, PAGE_SIZE, "bcm[%2d]:", ip_cnt);
@@ -2518,24 +2258,19 @@ static ssize_t show_get_filter_others_active(struct file *fp, struct kobject *ko
 					" ev%d %u,", ev_cnt,
 					filter_others.sm_other_active[ev_cnt]);
 		count += snprintf(buf + count, PAGE_SIZE, "\n");
-		ip_cnt++;
-	} while ((ip_cnt < data->bcm_ip_nr) && (ip_cnt % data->bcm_ip_print_nr));
+	}
 
 	return count;
 }
 
-static ssize_t show_filter_others_ctrl_help(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_filter_others_ctrl_help(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	ssize_t count = 0;
 	int othr_cnt;
-
-	if (off > 0)
-		return 0;
 
 	/* help store_filter_others_ctrl */
 	count += snprintf(buf + count, PAGE_SIZE, "\n= filter_others_ctrl set help =\n");
@@ -2581,10 +2316,10 @@ static ssize_t show_filter_others_ctrl_help(struct file *fp, struct kobject *kob
 	return count;
 }
 
-static ssize_t store_filter_others_ctrl(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t store_filter_others_ctrl(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
@@ -2598,9 +2333,6 @@ static ssize_t store_filter_others_ctrl(struct file *fp, struct kobject *kobj,
 	unsigned int sm_other_value[BCM_EVT_FLT_OTHR_MAX];
 	unsigned int *sm_other_active;
 	int ev_cnt, othr_cnt, ret;
-
-	if (off != 0)
-		return size;
 
 	sm_other_active = kzalloc(sizeof(int) * data->bcm_cnt_nr, GFP_KERNEL);
 	if (sm_other_active == NULL) {
@@ -2694,78 +2426,61 @@ static ssize_t store_filter_others_ctrl(struct file *fp, struct kobject *kobj,
 	}
 
 	kfree(sm_other_active);
-	return size;
+	return count;
 }
 
-static ssize_t show_get_sample_id(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_get_sample_id(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	struct exynos_bcm_ipc_base_info ipc_base_info;
 	struct exynos_bcm_sample_id sample_id;
 	ssize_t count = 0;
-	int ret;
-	static int ip_cnt = 0;
-
-	if (ip_cnt >= data->bcm_ip_nr) {
-		ip_cnt = 0;
-		return 0;
-	}
+	int ip_cnt, ret;
 
 	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_EVENT_SAMPLE_ID,
 					BCM_EVT_GET, BCM_EACH);
 
-	do {
+	for (ip_cnt = 0; ip_cnt < data->bcm_ip_nr; ip_cnt++) {
 		ret = exynos_bcm_dbg_sample_id_ctrl(&ipc_base_info,
 						&sample_id, ip_cnt, data);
 		if (ret) {
-			BCM_ERR("%s: failed get sample id(ip:%d)\n",
-					__func__, ip_cnt);
-			ip_cnt = 0;
-			return ret;
+			count += snprintf(buf + count, PAGE_SIZE,
+					"failed get sample id(ip:%d)\n", ip_cnt);
+			return count;
 		}
 
 		count += snprintf(buf + count, PAGE_SIZE,
 				"bcm[%2d]: mask(0x%08x), id(0x%08x)\n",
 				ip_cnt, sample_id.peak_mask, sample_id.peak_id);
-		ip_cnt++;
-	} while ((ip_cnt < data->bcm_ip_nr) && (ip_cnt % data->bcm_ip_print_nr));
+	}
 
 	return count;
 }
 
-static ssize_t show_get_sample_id_active(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_get_sample_id_active(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	struct exynos_bcm_ipc_base_info ipc_base_info;
 	struct exynos_bcm_sample_id sample_id;
 	ssize_t count = 0;
-	int ev_cnt, ret;
-	static int ip_cnt = 0;
-
-	if (ip_cnt >= data->bcm_ip_nr) {
-		ip_cnt = 0;
-		return 0;
-	}
+	int ip_cnt, ev_cnt, ret;
 
 	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_EVENT_SAMPLE_ID,
 					BCM_EVT_GET, BCM_EACH);
 
-	do {
+	for (ip_cnt = 0; ip_cnt < data->bcm_ip_nr; ip_cnt++) {
 		ret = exynos_bcm_dbg_sample_id_ctrl(&ipc_base_info,
 						&sample_id, ip_cnt, data);
 		if (ret) {
-			BCM_ERR("%s: failed get sample id(ip:%d)\n",
-					__func__, ip_cnt);
-			ip_cnt = 0;
-			return ret;
+			count += snprintf(buf + count, PAGE_SIZE,
+					"failed get sample id(ip:%d)\n", ip_cnt);
+			return count;
 		}
 
 		count += snprintf(buf + count, PAGE_SIZE, "bcm[%2d]:", ip_cnt);
@@ -2774,23 +2489,18 @@ static ssize_t show_get_sample_id_active(struct file *fp, struct kobject *kobj,
 					" ev%d %u,", ev_cnt,
 					sample_id.peak_enable[ev_cnt]);
 		count += snprintf(buf + count, PAGE_SIZE, "\n");
-		ip_cnt++;
-	} while ((ip_cnt < data->bcm_ip_nr) && (ip_cnt % data->bcm_ip_print_nr));
+	}
 
 	return count;
 }
 
-static ssize_t show_sample_id_ctrl_help(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_sample_id_ctrl_help(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	ssize_t count = 0;
-
-	if (off > 0)
-		return 0;
 
 	/* help store_sample_id_ctrl */
 	count += snprintf(buf + count, PAGE_SIZE, "\n= sample_id_ctrl set help =\n");
@@ -2826,10 +2536,10 @@ static ssize_t show_sample_id_ctrl_help(struct file *fp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t store_sample_id_ctrl(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t store_sample_id_ctrl(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
@@ -2841,9 +2551,6 @@ static ssize_t store_sample_id_ctrl(struct file *fp, struct kobject *kobj,
 	unsigned int peak_mask, peak_id;
 	unsigned int *peak_enable;
 	int ev_cnt, ret;
-
-	if (off != 0)
-		return size;
 
 	peak_enable = kzalloc(sizeof(int) * data->bcm_cnt_nr, GFP_KERNEL);
 	if (peak_enable == NULL) {
@@ -2922,13 +2629,12 @@ static ssize_t store_sample_id_ctrl(struct file *fp, struct kobject *kobj,
 	}
 
 	kfree(peak_enable);
-	return size;
+	return count;
 }
 
-static ssize_t show_get_run(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_get_run(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
@@ -2936,9 +2642,6 @@ static ssize_t show_get_run(struct file *fp, struct kobject *kobj,
 	unsigned int bcm_run;
 	ssize_t count = 0;
 	int ret;
-
-	if (off > 0)
-		return 0;
 
 	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_RUN_CONT,
 					BCM_EVT_GET, 0);
@@ -2958,13 +2661,10 @@ static ssize_t show_get_run(struct file *fp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t show_run_ctrl_help(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_run_ctrl_help(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
 	ssize_t count = 0;
-
-	if (off > 0)
-		return 0;
 
 	/* help store_run_ctrl */
 	count += snprintf(buf + count, PAGE_SIZE, "\n= run_ctrl set help =\n");
@@ -2977,18 +2677,15 @@ static ssize_t show_run_ctrl_help(struct file *fp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t store_run_ctrl(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t store_run_ctrl(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	unsigned int bcm_run;
 	int ret;
-
-	if (off != 0)
-		return size;
 
 	ret = kstrtouint(buf, 0, &bcm_run);
 	if (ret)
@@ -3003,19 +2700,17 @@ static ssize_t store_run_ctrl(struct file *fp, struct kobject *kobj,
 		bcm_run = true;
 
 	ret = exynos_bcm_dbg_run(bcm_run, data);
-
 	if (ret) {
 		BCM_ERR("%s:failed set Run state\n", __func__);
 		return ret;
 	}
 
-	return size;
+	return count;
 }
 
-static ssize_t show_get_period(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_get_period(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
@@ -3023,9 +2718,6 @@ static ssize_t show_get_period(struct file *fp, struct kobject *kobj,
 	unsigned int period;
 	ssize_t count = 0;
 	int ret;
-
-	if (off > 0)
-		return 0;
 
 	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_PERIOD_CONT,
 					BCM_EVT_GET, 0);
@@ -3043,13 +2735,10 @@ static ssize_t show_get_period(struct file *fp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t show_period_ctrl_help(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_period_ctrl_help(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
 	ssize_t count = 0;
-
-	if (off > 0)
-		return 0;
 
 	/* help store_period_ctrl */
 	count += snprintf(buf + count, PAGE_SIZE, "\n= period_ctrl set help =\n");
@@ -3063,19 +2752,16 @@ static ssize_t show_period_ctrl_help(struct file *fp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t store_period_ctrl(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t store_period_ctrl(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	struct exynos_bcm_ipc_base_info ipc_base_info;
 	unsigned int period;
 	int ret;
-
-	if (off != 0)
-		return size;
 
 	ret = kstrtouint(buf, 0, &period);
 	if (ret)
@@ -3090,13 +2776,12 @@ static ssize_t store_period_ctrl(struct file *fp, struct kobject *kobj,
 		return ret;
 	}
 
-	return size;
+	return count;
 }
 
-static ssize_t show_get_mode(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_get_mode(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
@@ -3104,9 +2789,6 @@ static ssize_t show_get_mode(struct file *fp, struct kobject *kobj,
 	unsigned int bcm_mode;
 	ssize_t count = 0;
 	int ret;
-
-	if (off > 0)
-		return 0;
 
 	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_MODE_CONT,
 					BCM_EVT_GET, 0);
@@ -3126,13 +2808,10 @@ static ssize_t show_get_mode(struct file *fp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t show_mode_ctrl_help(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_mode_ctrl_help(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
 	ssize_t count = 0;
-
-	if (off > 0)
-		return 0;
 
 	/* help store_mode_ctrl */
 	count += snprintf(buf + count, PAGE_SIZE, "\n= mode_ctrl set help =\n");
@@ -3145,19 +2824,16 @@ static ssize_t show_mode_ctrl_help(struct file *fp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t store_mode_ctrl(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t store_mode_ctrl(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	struct exynos_bcm_ipc_base_info ipc_base_info;
 	unsigned int bcm_mode;
 	int ret;
-
-	if (off != 0)
-		return size;
 
 	ret = kstrtouint(buf, 0, &bcm_mode);
 	if (ret)
@@ -3172,13 +2848,12 @@ static ssize_t store_mode_ctrl(struct file *fp, struct kobject *kobj,
 		return ret;
 	}
 
-	return size;
+	return count;
 }
 
-static ssize_t show_get_glbauto(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_get_glbauto(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
@@ -3186,14 +2861,6 @@ static ssize_t show_get_glbauto(struct file *fp, struct kobject *kobj,
 	unsigned int glb_en;
 	ssize_t count = 0;
 	int ret;
-
-	if (off > 0)
-		return 0;
-
-	if (!data->glb_auto_en) {
-		BCM_ERR("%s: don't support glb_auto_en\n", __func__);
-		return -ENODEV;
-	}
 
 	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_GLBAUTO_CONT,
 					BCM_EVT_GET, 0);
@@ -3210,13 +2877,10 @@ static ssize_t show_get_glbauto(struct file *fp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t show_glbauto_ctrl_help(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_glbauto_ctrl_help(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
 	ssize_t count = 0;
-
-	if (off > 0)
-		return 0;
 
 	/* help store_glbauto_ctrl */
 	count += snprintf(buf + count, PAGE_SIZE, "\n= glbauto_ctrl set help =\n");
@@ -3226,10 +2890,10 @@ static ssize_t show_glbauto_ctrl_help(struct file *fp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t store_glbauto_ctrl(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t store_glbauto_ctrl(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
@@ -3237,17 +2901,9 @@ static ssize_t store_glbauto_ctrl(struct file *fp, struct kobject *kobj,
 	unsigned int glb_en;
 	int ret;
 
-	if (off != 0)
-		return size;
-
 	ret = kstrtouint(buf, 0, &glb_en);
 	if (ret)
 		return ret;
-
-	if (!data->glb_auto_en) {
-		BCM_ERR("%s: don't support glb_auto_en\n", __func__);
-		return -ENODEV;
-	}
 
 	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_GLBAUTO_CONT,
 					BCM_EVT_SET, 0);
@@ -3258,13 +2914,12 @@ static ssize_t store_glbauto_ctrl(struct file *fp, struct kobject *kobj,
 		return ret;
 	}
 
-	return size;
+	return count;
 }
 
-static ssize_t show_get_str(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_get_str(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
@@ -3272,9 +2927,6 @@ static ssize_t show_get_str(struct file *fp, struct kobject *kobj,
 	unsigned int suspend;
 	ssize_t count = 0;
 	int ret;
-
-	if (off > 0)
-		return 0;
 
 	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_STR_STATE,
 					BCM_EVT_GET, 0);
@@ -3292,13 +2944,10 @@ static ssize_t show_get_str(struct file *fp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t show_str_ctrl_help(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_str_ctrl_help(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
 	ssize_t count = 0;
-
-	if (off > 0)
-		return 0;
 
 	/* help store_str_ctrl */
 	count += snprintf(buf + count, PAGE_SIZE, "\n= str_ctrl set help =\n");
@@ -3310,18 +2959,15 @@ static ssize_t show_str_ctrl_help(struct file *fp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t store_str_ctrl(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t store_str_ctrl(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	unsigned int suspend;
 	int ret;
-
-	if (off != 0)
-		return size;
 
 	ret = kstrtouint(buf, 0, &suspend);
 	if (ret)
@@ -3336,59 +2982,46 @@ static ssize_t store_str_ctrl(struct file *fp, struct kobject *kobj,
 		return ret;
 	}
 
-	return size;
+	return count;
 }
 
-static ssize_t show_get_ip(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_get_ip(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	struct exynos_bcm_ipc_base_info ipc_base_info;
 	unsigned int ip_enable;
 	ssize_t count = 0;
-	int ret;
-	static int ip_cnt = 0;
-
-	if (ip_cnt >= data->bcm_ip_nr) {
-		ip_cnt = 0;
-		return 0;
-	}
+	int ip_cnt, ret;
 
 	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_IP_CONT,
 					BCM_EVT_GET, BCM_EACH);
 
-	do {
+	for (ip_cnt = 0; ip_cnt < data->bcm_ip_nr; ip_cnt++) {
 		ret = exynos_bcm_dbg_ip_ctrl(&ipc_base_info,
 						&ip_enable, ip_cnt, data);
 		if (ret) {
-			BCM_ERR("%s: failed get ip_enable state(ip:%d)\n",
-					__func__, ip_cnt);
-			ip_cnt = 0;
-			return ret;
+			count += snprintf(buf + count, PAGE_SIZE,
+					"failed get ip_enable state(ip:%d)\n", ip_cnt);
+			return count;
 		}
 
 		count += snprintf(buf + count, PAGE_SIZE, "bcm[%2d]: enabled (%s)\n",
 					ip_cnt, ip_enable ? "true" : "false");
-		ip_cnt++;
-	} while ((ip_cnt < data->bcm_ip_nr) && (ip_cnt % data->bcm_ip_print_nr));
+	}
 
 	return count;
 }
 
-static ssize_t show_ip_ctrl_help(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_ip_ctrl_help(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	ssize_t count = 0;
-
-	if (off > 0)
-		return 0;
 
 	/* help store_ip_ctrl */
 	count += snprintf(buf + count, PAGE_SIZE, "\n= ip_ctrl set help =\n");
@@ -3404,19 +3037,16 @@ static ssize_t show_ip_ctrl_help(struct file *fp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t store_ip_ctrl(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t store_ip_ctrl(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	struct exynos_bcm_ipc_base_info ipc_base_info;
 	unsigned int bcm_ip_index, ip_enable;
 	int ret;
-
-	if (off != 0)
-		return size;
 
 	ret = sscanf(buf, "%u %u", &bcm_ip_index, &ip_enable);
 	if (ret != 2)
@@ -3439,9 +3069,10 @@ static ssize_t store_ip_ctrl(struct file *fp, struct kobject *kobj,
 		return ret;
 	}
 
-	return size;
+	return count;
 }
 
+#ifdef CONFIG_DEBUG_SNAPSHOT
 static int exynos_bcm_dbg_set_dump_info(struct exynos_bcm_dbg_data *data)
 {
 	struct exynos_bcm_ipc_base_info ipc_base_info;
@@ -3451,6 +3082,8 @@ static int exynos_bcm_dbg_set_dump_info(struct exynos_bcm_dbg_data *data)
 		data->dump_addr.buff_size > data->dump_addr.p_size)
 		data->dump_addr.buff_size = data->dump_addr.p_size;
 
+	BCM_INFO("%s: virtual address for reserved memory: v_addr = 0x%p\n",
+			__func__, data->dump_addr.v_addr);
 	BCM_INFO("%s: buffer size for reserved memory: buff_size = 0x%x\n",
 			__func__, data->dump_addr.buff_size);
 
@@ -3467,17 +3100,13 @@ static int exynos_bcm_dbg_set_dump_info(struct exynos_bcm_dbg_data *data)
 	return 0;
 }
 
-static ssize_t show_dump_addr_info(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_dump_addr_info(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	ssize_t count = 0;
-
-	if (off > 0)
-		return 0;
 
 	count += snprintf(buf + count, PAGE_SIZE, "\n= BCM dump address info =\n");
 	count += snprintf(buf + count, PAGE_SIZE,
@@ -3492,18 +3121,15 @@ static ssize_t show_dump_addr_info(struct file *fp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t store_dump_addr_info(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t store_dump_addr_info(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	unsigned int buff_size;
 	int ret;
-
-	if (off != 0)
-		return size;
 
 	ret = kstrtouint(buf, 16, &buff_size);
 	if (ret)
@@ -3517,20 +3143,17 @@ static ssize_t store_dump_addr_info(struct file *fp, struct kobject *kobj,
 		return ret;
 	}
 
-	return size;
+	return count;
 }
+#endif
 
-static ssize_t show_enable_dump_klog(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_enable_dump_klog(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	ssize_t count = 0;
-
-	if (off > 0)
-		return 0;
 
 	count += snprintf(buf + count, PAGE_SIZE, "\n= BCM dump to kernel log =\n");
 	count += snprintf(buf + count, PAGE_SIZE, "%s\n",
@@ -3539,18 +3162,15 @@ static ssize_t show_enable_dump_klog(struct file *fp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t store_enable_dump_klog(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t store_enable_dump_klog(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	unsigned int enable;
 	int ret;
-
-	if (off != 0)
-		return size;
 
 	ret = kstrtouint(buf, 0, &enable);
 	if (ret)
@@ -3561,21 +3181,17 @@ static ssize_t store_enable_dump_klog(struct file *fp, struct kobject *kobj,
 	else
 		data->dump_klog = false;
 
-	return size;
+	return count;
 }
 
-static ssize_t show_enable_stop_owner(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t show_enable_stop_owner(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	ssize_t count = 0;
 	int i;
-
-	if (off > 0)
-		return 0;
 
 	count += snprintf(buf + count, PAGE_SIZE, "\n= BCM Available stop owner =\n");
 	for (i = 0; i < STOP_OWNER_MAX; i++)
@@ -3585,18 +3201,15 @@ static ssize_t show_enable_stop_owner(struct file *fp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t store_enable_stop_owner(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t store_enable_stop_owner(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	unsigned int owner_index, enable;
 	int ret;
-
-	if (off != 0)
-		return size;
 
 	ret = sscanf(buf, "%u %u", &owner_index, &enable);
 	if (ret != 2)
@@ -3612,7 +3225,7 @@ static ssize_t store_enable_stop_owner(struct file *fp, struct kobject *kobj,
 	else
 		data->available_stop_owner[owner_index] = false;
 
-	return size;
+	return count;
 }
 
 static ssize_t show_bcm_calc(struct device *dev,
@@ -3634,7 +3247,6 @@ static ssize_t show_bcm_calc(struct device *dev,
 
 	cancel_delayed_work(&bcm_calc->work);
 
-	// accmulate latest info
 	exynos_bcm_find_dump_data(data);
 
 	count += snprintf(buf + count, PAGE_SIZE, "ip_name, time, ccnt, pmcnt0, pmcnt1, pmcnt2, pmcnt3, pmcnt4, pmcnt5, pmcnt6, pmcnt7\n");
@@ -3670,216 +3282,14 @@ static ssize_t store_bcm_calc(struct device *dev,
 	return count;
 }
 
-static ssize_t show_histogram_27c_id(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
+static ssize_t show_bcm_dbg_load_bin(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
-	struct platform_device *pdev = container_of(dev,
-					struct platform_device, dev);
-	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
-	struct exynos_bcm_ipc_base_info ipc_base_info;
-	ssize_t count = 0;
-	int i, ret, bcm_ip_index;
-	unsigned int id0, id1;
-
-	if (off > 0)
-		return 0;
-
-	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_HISTOGRAM_ID,
-					BCM_EVT_GET, BCM_EACH);
-
-	for (i = 0; i < 4; i++) {
-		bcm_ip_index = BCM_IP_D0_INDEX + i;
-		ret = exynos_bcm_dbg_histogram_id(&ipc_base_info, &id0, &id1,
-						bcm_ip_index, data);
-		if (ret) {
-			BCM_ERR("%s: failed get histogram_id(%d)\n",
-					__func__, i);
-			return ret;
-		}
-		count += snprintf(buf + count, PAGE_SIZE,
-				"csis_d%d id0 = 0x%08X, id1 = 0x%08X\n", i, id0, id1);
-	}
-
-	return count;
-}
-
-static ssize_t store_histogram_27c_id(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
-{
-	struct device *dev = container_of(kobj, struct device, kobj);
-	struct platform_device *pdev = container_of(dev,
-					struct platform_device, dev);
-	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
-	struct exynos_bcm_ipc_base_info ipc_base_info;
-	unsigned int histogram_27c_index, bcm_ip_index, id0, id1;
-	int ret;
-
-	if (off != 0)
-		return size;
-
-	ret = sscanf(buf, "%u %x %x", &histogram_27c_index, &id0, &id1);
-	if (ret != 3 || histogram_27c_index >= 4)
-		return -EINVAL;
-
-	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_HISTOGRAM_ID,
-					BCM_EVT_SET, BCM_EACH);
-
-	bcm_ip_index = BCM_IP_D0_INDEX + histogram_27c_index;
-	ret = exynos_bcm_dbg_histogram_id(&ipc_base_info, &id0, &id1,
-						bcm_ip_index, data);
-	if (ret) {
-		BCM_ERR("%s:failed set histogram config\n", __func__);
-		return ret;
-	}
-
-	return size;
-}
-
-static ssize_t show_histogram_27c_config(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
-{
-	struct device *dev = container_of(kobj, struct device, kobj);
-	struct platform_device *pdev = container_of(dev,
-					struct platform_device, dev);
-	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
-	struct exynos_bcm_ipc_base_info ipc_base_info;
-	ssize_t count = 0;
-	int i, ret, bcm_ip_index;
-	unsigned int config;
-
-	if (off > 0)
-		return 0;
-
-	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_HISTOGRAM_CONFIG,
-					BCM_EVT_GET, BCM_EACH);
-
-	for (i = 0; i < 4; i++) {
-		bcm_ip_index = BCM_IP_D0_INDEX + i;
-		ret = exynos_bcm_dbg_histogram_config(&ipc_base_info,
-						&config, bcm_ip_index, data);
-		if (ret) {
-			BCM_ERR("%s: failed get histogram_config(%d)\n",
-					__func__, i);
-			return ret;
-		}
-		count += snprintf(buf + count, PAGE_SIZE,
-				"csis_d%d config = 0x%08X\n", i, config);
-	}
-
-	return count;
-}
-
-static ssize_t store_histogram_27c_config(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
-{
-	struct device *dev = container_of(kobj, struct device, kobj);
-	struct platform_device *pdev = container_of(dev,
-					struct platform_device, dev);
-	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
-	struct exynos_bcm_ipc_base_info ipc_base_info;
-	unsigned int histogram_27c_index, bcm_ip_index, config;
-	int ret;
-
-	if (off != 0)
-		return size;
-
-	ret = sscanf(buf, "%u %x", &histogram_27c_index, &config);
-	if (ret != 2 || histogram_27c_index >= 4)
-		return -EINVAL;
-
-	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_HISTOGRAM_CONFIG,
-					BCM_EVT_SET, BCM_EACH);
-
-	bcm_ip_index = BCM_IP_D0_INDEX + histogram_27c_index;
-	ret = exynos_bcm_dbg_histogram_config(&ipc_base_info, &config,
-						bcm_ip_index, data);
-	if (ret) {
-		BCM_ERR("%s:failed set histogram config\n", __func__);
-		return ret;
-	}
-
-	return size;
-}
-
-static ssize_t show_histogram_27d_config(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
-{
-	struct device *dev = container_of(kobj, struct device, kobj);
-	struct platform_device *pdev = container_of(dev,
-					struct platform_device, dev);
-	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
-	struct exynos_bcm_ipc_base_info ipc_base_info;
-	ssize_t count = 0;
-	int i, ret, bcm_ip_index;
-	unsigned int config;
-
-	if (off > 0)
-		return 0;
-
-	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_HISTOGRAM_CONFIG,
-					BCM_EVT_GET, BCM_EACH);
-
-	for (i = 0; i < 4; i++) {
-		bcm_ip_index = BCM_IP_DPUF0D0_INDEX + i;
-		ret = exynos_bcm_dbg_histogram_config(&ipc_base_info,
-						&config, bcm_ip_index, data);
-		if (ret) {
-			BCM_ERR("%s: failed get histogram_config(%d)\n",
-					__func__, i);
-			return ret;
-		}
-		count += snprintf(buf + count, PAGE_SIZE,
-				"dpuf%ud%u config = 0x%08X\n", i / 2, i & 0x1, config);
-	}
-
-	return count;
-}
-
-static ssize_t store_histogram_27d_config(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
-{
-	struct device *dev = container_of(kobj, struct device, kobj);
-	struct platform_device *pdev = container_of(dev,
-					struct platform_device, dev);
-	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
-	struct exynos_bcm_ipc_base_info ipc_base_info;
-	unsigned int histogram_27d_index, bcm_ip_index, config;
-	int ret;
-
-	if (off != 0)
-		return size;
-
-	ret = sscanf(buf, "%u %x", &histogram_27d_index, &config);
-	if (ret != 2 || histogram_27d_index >= 4)
-		return -EINVAL;
-
-	exynos_bcm_dbg_set_base_info(&ipc_base_info, BCM_EVT_HISTOGRAM_CONFIG,
-					BCM_EVT_SET, BCM_EACH);
-
-	bcm_ip_index = BCM_IP_DPUF0D0_INDEX + histogram_27d_index;
-	ret = exynos_bcm_dbg_histogram_config(&ipc_base_info, &config,
-						bcm_ip_index, data);
-	if (ret) {
-		BCM_ERR("%s:failed set histogram config\n", __func__);
-		return ret;
-	}
-
-	return size;
-}
-
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
-static ssize_t show_bcm_dbg_load_bin(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
-{
-	struct device *dev = container_of(kobj, struct device, kobj);
 	struct platform_device *pdev = container_of(dev,
 					struct platform_device, dev);
 	struct exynos_bcm_dbg_data *data = platform_get_drvdata(pdev);
 	ssize_t count = 0;
-
-	if (off > 0)
-		return 0;
 
 	count += snprintf(buf + count, PAGE_SIZE, "\n= BCM Load Bin =\n");
 	count += snprintf(buf + count, PAGE_SIZE, " bcm load bin: %s\n",
@@ -3888,14 +3298,12 @@ static ssize_t show_bcm_dbg_load_bin(struct file *fp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t store_bcm_dbg_load_bin(struct file *fp, struct kobject *kobj,
-		struct bin_attribute *battr, char *buf, loff_t off, size_t size)
+static ssize_t store_bcm_dbg_load_bin(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
 {
 	unsigned int load;
 	int ret;
-
-	if (off != 0)
-		return size;
 
 	ret = kstrtouint(buf, 0, &load);
 	if (ret)
@@ -3910,178 +3318,133 @@ static ssize_t store_bcm_dbg_load_bin(struct file *fp, struct kobject *kobj,
 		}
 	}
 
-	return size;
+	return count;
 }
 #endif
 
-static BIN_ATTR(bcm_dbg_data_pd, 0440, show_bcm_dbg_data_pd, NULL, 0);
-static BIN_ATTR(bcm_dbg_data_df_event, 0440,
-			show_bcm_dbg_data_df_event, NULL, 0);
-static BIN_ATTR(bcm_dbg_data_df_filter, 0440,
-			show_bcm_dbg_data_df_filter, NULL, 0);
-static BIN_ATTR(bcm_dbg_data_df_sample, 0440,
-			show_bcm_dbg_data_df_sample, NULL, 0);
-static BIN_ATTR(bcm_dbg_data_df_attr, 0440,
-			show_bcm_dbg_data_df_attr, NULL, 0);
-static BIN_ATTR(get_event, 0440, show_get_event, NULL, 0);
-static BIN_ATTR(event_ctrl_help, 0440, show_event_ctrl_help, NULL, 0);
-static BIN_ATTR(event_ctrl, 0640, NULL, store_event_ctrl, 0);
-static BIN_ATTR(get_filter_id, 0440, show_get_filter_id, NULL, 0);
-static BIN_ATTR(get_filter_id_active, 0440,
-			show_get_filter_id_active, NULL, 0);
-static BIN_ATTR(filter_id_ctrl_help, 0440,
-			show_filter_id_ctrl_help, NULL, 0);
-static BIN_ATTR(filter_id_ctrl, 0640, NULL, store_filter_id_ctrl, 0);
-static BIN_ATTR(get_filter_others, 0440, show_get_filter_others, NULL, 0);
-static BIN_ATTR(get_filter_others_active, 0440,
-			show_get_filter_others_active, NULL, 0);
-static BIN_ATTR(filter_others_ctrl_help, 0440,
-			show_filter_others_ctrl_help, NULL, 0);
-static BIN_ATTR(filter_others_ctrl, 0640, NULL, store_filter_others_ctrl, 0);
-static BIN_ATTR(get_sample_id, 0440, show_get_sample_id, NULL, 0);
-static BIN_ATTR(get_sample_id_active, 0440,
-			show_get_sample_id_active, NULL, 0);
-static BIN_ATTR(sample_id_ctrl_help, 0440,
-			show_sample_id_ctrl_help, NULL, 0);
-static BIN_ATTR(sample_id_ctrl, 0640, NULL, store_sample_id_ctrl, 0);
-static BIN_ATTR(get_run, 0440, show_get_run, NULL, 0);
-static BIN_ATTR(run_ctrl_help, 0440, show_run_ctrl_help, NULL, 0);
-static BIN_ATTR(run_ctrl, 0640, NULL, store_run_ctrl, 0);
-static BIN_ATTR(get_period, 0440, show_get_period, NULL, 0);
-static BIN_ATTR(period_ctrl_help, 0440, show_period_ctrl_help, NULL, 0);
-static BIN_ATTR(period_ctrl, 0640, NULL, store_period_ctrl, 0);
-static BIN_ATTR(get_mode, 0440, show_get_mode, NULL, 0);
-static BIN_ATTR(mode_ctrl_help, 0440, show_mode_ctrl_help, NULL, 0);
-static BIN_ATTR(mode_ctrl, 0640, NULL, store_mode_ctrl, 0);
-static BIN_ATTR(get_glbauto, 0440, show_get_glbauto, NULL, 0);
-static BIN_ATTR(glbauto_ctrl_help, 0440, show_glbauto_ctrl_help, NULL, 0);
-static BIN_ATTR(glbauto_ctrl, 0640, NULL, store_glbauto_ctrl, 0);
-static BIN_ATTR(get_str, 0440, show_get_str, NULL, 0);
-static BIN_ATTR(str_ctrl_help, 0440, show_str_ctrl_help, NULL, 0);
-static BIN_ATTR(str_ctrl, 0640, NULL, store_str_ctrl, 0);
-static BIN_ATTR(get_ip, 0440, show_get_ip, NULL, 0);
-static BIN_ATTR(ip_ctrl_help, 0440, show_ip_ctrl_help, NULL, 0);
-static BIN_ATTR(ip_ctrl, 0640, NULL, store_ip_ctrl, 0);
-static BIN_ATTR(dump_addr_info, 0640, show_dump_addr_info, store_dump_addr_info, 0);
-static BIN_ATTR(enable_dump_klog, 0640, show_enable_dump_klog, store_enable_dump_klog, 0);
-static BIN_ATTR(enable_stop_owner, 0640, show_enable_stop_owner, store_enable_stop_owner, 0);
-
-static BIN_ATTR(histogram_27c_id, 0640, show_histogram_27c_id, store_histogram_27c_id, 0);
-static BIN_ATTR(histogram_27c_config, 0640, show_histogram_27c_config, store_histogram_27c_config, 0);
-static BIN_ATTR(histogram_27d_config, 0640, show_histogram_27d_config, store_histogram_27d_config, 0);
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
-static BIN_ATTR(bcm_dbg_load_bin, 0640, show_bcm_dbg_load_bin, store_bcm_dbg_load_bin, 0);
+static DEVICE_ATTR(bcm_dbg_data_pd, 0440, show_bcm_dbg_data_pd, NULL);
+static DEVICE_ATTR(bcm_dbg_data_df_event, 0440,
+			show_bcm_dbg_data_df_event, NULL);
+static DEVICE_ATTR(bcm_dbg_data_df_filter, 0440,
+			show_bcm_dbg_data_df_filter, NULL);
+static DEVICE_ATTR(bcm_dbg_data_df_sample, 0440,
+			show_bcm_dbg_data_df_sample, NULL);
+static DEVICE_ATTR(bcm_dbg_data_df_attr, 0440,
+			show_bcm_dbg_data_df_attr, NULL);
+static DEVICE_ATTR(get_event, 0440, show_get_event, NULL);
+static DEVICE_ATTR(event_ctrl_help, 0440, show_event_ctrl_help, NULL);
+static DEVICE_ATTR(event_ctrl, 0640, NULL, store_event_ctrl);
+static DEVICE_ATTR(get_filter_id, 0440, show_get_filter_id, NULL);
+static DEVICE_ATTR(get_filter_id_active, 0440,
+			show_get_filter_id_active, NULL);
+static DEVICE_ATTR(filter_id_ctrl_help, 0440,
+			show_filter_id_ctrl_help, NULL);
+static DEVICE_ATTR(filter_id_ctrl, 0640, NULL, store_filter_id_ctrl);
+static DEVICE_ATTR(get_filter_others, 0440, show_get_filter_others, NULL);
+static DEVICE_ATTR(get_filter_others_active, 0440,
+			show_get_filter_others_active, NULL);
+static DEVICE_ATTR(filter_others_ctrl_help, 0440,
+			show_filter_others_ctrl_help, NULL);
+static DEVICE_ATTR(filter_others_ctrl, 0640, NULL, store_filter_others_ctrl);
+static DEVICE_ATTR(get_sample_id, 0440, show_get_sample_id, NULL);
+static DEVICE_ATTR(get_sample_id_active, 0440,
+			show_get_sample_id_active, NULL);
+static DEVICE_ATTR(sample_id_ctrl_help, 0440,
+			show_sample_id_ctrl_help, NULL);
+static DEVICE_ATTR(sample_id_ctrl, 0640, NULL, store_sample_id_ctrl);
+static DEVICE_ATTR(get_run, 0440, show_get_run, NULL);
+static DEVICE_ATTR(run_ctrl_help, 0440, show_run_ctrl_help, NULL);
+static DEVICE_ATTR(run_ctrl, 0640, NULL, store_run_ctrl);
+static DEVICE_ATTR(get_period, 0440, show_get_period, NULL);
+static DEVICE_ATTR(period_ctrl_help, 0440, show_period_ctrl_help, NULL);
+static DEVICE_ATTR(period_ctrl, 0640, NULL, store_period_ctrl);
+static DEVICE_ATTR(get_mode, 0440, show_get_mode, NULL);
+static DEVICE_ATTR(mode_ctrl_help, 0440, show_mode_ctrl_help, NULL);
+static DEVICE_ATTR(mode_ctrl, 0640, NULL, store_mode_ctrl);
+static DEVICE_ATTR(get_glbauto, 0440, show_get_glbauto, NULL);
+static DEVICE_ATTR(glbauto_ctrl_help, 0440, show_glbauto_ctrl_help, NULL);
+static DEVICE_ATTR(glbauto_ctrl, 0640, NULL, store_glbauto_ctrl);
+static DEVICE_ATTR(get_str, 0440, show_get_str, NULL);
+static DEVICE_ATTR(str_ctrl_help, 0440, show_str_ctrl_help, NULL);
+static DEVICE_ATTR(str_ctrl, 0640, NULL, store_str_ctrl);
+static DEVICE_ATTR(get_ip, 0440, show_get_ip, NULL);
+static DEVICE_ATTR(ip_ctrl_help, 0440, show_ip_ctrl_help, NULL);
+static DEVICE_ATTR(ip_ctrl, 0640, NULL, store_ip_ctrl);
+#ifdef CONFIG_DEBUG_SNAPSHOT
+static DEVICE_ATTR(dump_addr_info, 0640, show_dump_addr_info, store_dump_addr_info);
 #endif
-
-static struct bin_attribute *exynos_bcm_dbg_sysfs_entries[] = {
-	&bin_attr_bcm_dbg_data_pd,
-	&bin_attr_bcm_dbg_data_df_event,
-	&bin_attr_bcm_dbg_data_df_filter,
-	&bin_attr_bcm_dbg_data_df_sample,
-	&bin_attr_bcm_dbg_data_df_attr,
-	&bin_attr_get_event,
-	&bin_attr_event_ctrl_help,
-	&bin_attr_event_ctrl,
-	&bin_attr_get_filter_id,
-	&bin_attr_get_filter_id_active,
-	&bin_attr_filter_id_ctrl_help,
-	&bin_attr_filter_id_ctrl,
-	&bin_attr_get_filter_others,
-	&bin_attr_get_filter_others_active,
-	&bin_attr_filter_others_ctrl_help,
-	&bin_attr_filter_others_ctrl,
-	&bin_attr_get_sample_id,
-	&bin_attr_get_sample_id_active,
-	&bin_attr_sample_id_ctrl_help,
-	&bin_attr_sample_id_ctrl,
-	&bin_attr_get_run,
-	&bin_attr_run_ctrl_help,
-	&bin_attr_run_ctrl,
-	&bin_attr_get_period,
-	&bin_attr_period_ctrl_help,
-	&bin_attr_period_ctrl,
-	&bin_attr_get_mode,
-	&bin_attr_mode_ctrl_help,
-	&bin_attr_mode_ctrl,
-	&bin_attr_get_glbauto,
-	&bin_attr_glbauto_ctrl_help,
-	&bin_attr_glbauto_ctrl,
-	&bin_attr_get_str,
-	&bin_attr_str_ctrl_help,
-	&bin_attr_str_ctrl,
-	&bin_attr_get_ip,
-	&bin_attr_ip_ctrl_help,
-	&bin_attr_ip_ctrl,
-	&bin_attr_dump_addr_info,
-	&bin_attr_enable_dump_klog,
-	&bin_attr_enable_stop_owner,
-	&bin_attr_histogram_27c_id,
-	&bin_attr_histogram_27c_config,
-	&bin_attr_histogram_27d_config,
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
-	&bin_attr_bcm_dbg_load_bin,
+static DEVICE_ATTR(enable_dump_klog, 0640, show_enable_dump_klog, store_enable_dump_klog);
+static DEVICE_ATTR(enable_stop_owner, 0640, show_enable_stop_owner, store_enable_stop_owner);
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
+static DEVICE_ATTR(bcm_dbg_load_bin, 0640, show_bcm_dbg_load_bin, store_bcm_dbg_load_bin);
 #endif
-	NULL,
-};
-
 static DEVICE_ATTR(bcm_calc, 0660, show_bcm_calc, store_bcm_calc);
 
-static struct attribute *exynos_bcm_dbg_sysfs_dev_entries[] = {
+static struct attribute *exynos_bcm_dbg_sysfs_entries[] = {
+	&dev_attr_bcm_dbg_data_pd.attr,
+	&dev_attr_bcm_dbg_data_df_event.attr,
+	&dev_attr_bcm_dbg_data_df_filter.attr,
+	&dev_attr_bcm_dbg_data_df_sample.attr,
+	&dev_attr_bcm_dbg_data_df_attr.attr,
+	&dev_attr_get_event.attr,
+	&dev_attr_event_ctrl_help.attr,
+	&dev_attr_event_ctrl.attr,
+	&dev_attr_get_filter_id.attr,
+	&dev_attr_get_filter_id_active.attr,
+	&dev_attr_filter_id_ctrl_help.attr,
+	&dev_attr_filter_id_ctrl.attr,
+	&dev_attr_get_filter_others.attr,
+	&dev_attr_get_filter_others_active.attr,
+	&dev_attr_filter_others_ctrl_help.attr,
+	&dev_attr_filter_others_ctrl.attr,
+	&dev_attr_get_sample_id.attr,
+	&dev_attr_get_sample_id_active.attr,
+	&dev_attr_sample_id_ctrl_help.attr,
+	&dev_attr_sample_id_ctrl.attr,
+	&dev_attr_get_run.attr,
+	&dev_attr_run_ctrl_help.attr,
+	&dev_attr_run_ctrl.attr,
+	&dev_attr_get_period.attr,
+	&dev_attr_period_ctrl_help.attr,
+	&dev_attr_period_ctrl.attr,
+	&dev_attr_get_mode.attr,
+	&dev_attr_mode_ctrl_help.attr,
+	&dev_attr_mode_ctrl.attr,
+	&dev_attr_get_glbauto.attr,
+	&dev_attr_glbauto_ctrl_help.attr,
+	&dev_attr_glbauto_ctrl.attr,
+	&dev_attr_get_str.attr,
+	&dev_attr_str_ctrl_help.attr,
+	&dev_attr_str_ctrl.attr,
+	&dev_attr_get_ip.attr,
+	&dev_attr_ip_ctrl_help.attr,
+	&dev_attr_ip_ctrl.attr,
+#ifdef CONFIG_DEBUG_SNAPSHOT
+	&dev_attr_dump_addr_info.attr,
+#endif
+	&dev_attr_enable_dump_klog.attr,
+	&dev_attr_enable_stop_owner.attr,
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
+	&dev_attr_bcm_dbg_load_bin.attr,
+#endif
 	&dev_attr_bcm_calc.attr,
 	NULL,
 };
 
 static struct attribute_group exynos_bcm_dbg_attr_group = {
 	.name	= "bcm_attr",
-	.bin_attrs	= exynos_bcm_dbg_sysfs_entries,
-	.attrs	= exynos_bcm_dbg_sysfs_dev_entries,
+	.attrs	= exynos_bcm_dbg_sysfs_entries,
 };
 
-static void __iomem *exynos_bcmdbg_remap(unsigned long addr, unsigned int size)
-{
-	int i;
-	unsigned int num_pages = (size >> PAGE_SHIFT);
-	pgprot_t prot = pgprot_writecombine(PAGE_KERNEL);
-	struct page **pages = NULL;
-	void __iomem *v_addr = NULL;
-
-	if (!addr)
-		return 0;
-
-	pages = kmalloc_array(num_pages, sizeof(struct page *), GFP_ATOMIC);
-	if (!pages)
-		return 0;
-
-	for (i = 0; i < num_pages; i++) {
-		pages[i] = phys_to_page(addr);
-		addr += PAGE_SIZE;
-	}
-
-	v_addr = vmap(pages, num_pages, VM_MAP, prot);
-	kfree(pages);
-
-	return v_addr;
-}
-
+#ifdef CONFIG_DEBUG_SNAPSHOT
 static int exynos_bcm_dbg_dump_config(struct exynos_bcm_dbg_data *data)
 {
 	int ret;
 
-	data->dump_addr.p_addr = bcm_reserved.p_addr;
-	data->dump_addr.p_size = bcm_reserved.p_size;
-	data->dump_addr.v_addr = exynos_bcmdbg_remap(data->dump_addr.p_addr,
-			data->dump_addr.p_size);
-	dbg_snapshot_add_bl_item_info(BCM_DSS_NAME,
-			data->dump_addr.p_addr, data->dump_addr.p_size);
-
-	if (!data->dump_addr.p_addr) {
-		BCM_ERR("%s: failed get dump address\n", __func__);
-		return -ENOMEM;
-	}
-	if (!data->dump_addr.v_addr) {
-		BCM_ERR("%s: failed get virtual address\n", __func__);
-		return -ENOMEM;
-	}
+	data->dump_addr.p_addr = dbg_snapshot_get_item_paddr(BCM_DSS_NAME);
+	data->dump_addr.p_size = dbg_snapshot_get_item_size(BCM_DSS_NAME);
+	data->dump_addr.v_addr =
+		(void __iomem *)dbg_snapshot_get_item_vaddr(BCM_DSS_NAME);
 
 	ret = exynos_bcm_dbg_set_dump_info(data);
 	if (ret) {
@@ -4091,22 +3454,15 @@ static int exynos_bcm_dbg_dump_config(struct exynos_bcm_dbg_data *data)
 
 	return 0;
 }
+#endif
 
-#if defined(CONFIG_EXYNOS_ITMON) || defined(CONFIG_EXYNOS_ITMON_MODULE)
+#ifdef CONFIG_EXYNOS_ITMON
 static int exynos_bcm_dbg_itmon_notifier(struct notifier_block *nb,
 					unsigned long val, void *v)
 {
 	struct itmon_notifier *itmon_info = (struct itmon_notifier *)v;
 
 	BCM_INFO("%s: itmon error code %u\n", __func__, itmon_info->errcode);
-
-	if (itmon_info->errcode == ERRCODE_ITMON_SLVERR && (itmon_info->dest &&
-			(!strcmp("DREX_IRPS0", itmon_info->dest) ||
-			!strcmp("DREX_IRPS1", itmon_info->dest) ||
-			!strcmp("DREX_IRPS2", itmon_info->dest) ||
-			!strcmp("DREX_IRPS3", itmon_info->dest)))) {
-		return NOTIFY_BAD;
-	}
 
 	if (itmon_info->errcode == ERRCODE_ITMON_TIMEOUT) {
 		BCM_INFO("%s: Note: It can occurred be IPC timeout	\
@@ -4137,13 +3493,6 @@ static int exynos_bcm_dbg_init(struct exynos_bcm_dbg_data *data)
 		goto err_ipc_channel;
 	}
 
-	ret = exynos_bcm_dbg_dump_config(data);
-	if (ret) {
-		BCM_ERR("%s: failed to dump config\n", __func__);
-		goto err_dump_config;
-	}
-	data->dump_klog = false;
-
 	/* Initalize BCM Plugin */
 	ret = exynos_bcm_dbg_early_init(data, DBG_MODE);
 	if (ret) {
@@ -4152,11 +3501,21 @@ static int exynos_bcm_dbg_init(struct exynos_bcm_dbg_data *data)
 	}
 
 	/* initial Local Power Domain sync-up */
+	data->pd_sync_init = false;
 	ret = exynos_bcm_dbg_pd_sync_init(data);
 	if (ret) {
 		BCM_ERR("%s: failed to pd_sync_init\n", __func__);
 		goto err_pd_sync_init;
 	}
+
+#ifdef CONFIG_DEBUG_SNAPSHOT
+	ret = exynos_bcm_dbg_dump_config(data);
+	if (ret) {
+		BCM_ERR("%s: failed to dump config\n", __func__);
+		goto err_dump_config;
+	}
+#endif
+	data->dump_klog = false;
 
 	/* BCM plugin run */
 	if (data->initial_bcm_run) {
@@ -4170,9 +3529,11 @@ static int exynos_bcm_dbg_init(struct exynos_bcm_dbg_data *data)
 	return 0;
 
 err_initial_run:
+#ifdef CONFIG_DEBUG_SNAPSHOT
+err_dump_config:
+#endif
 err_pd_sync_init:
 err_early_init:
-err_dump_config:
 	exynos_bcm_dbg_ipc_channel_release(data);
 err_ipc_channel:
 err_parse_dt:
@@ -4201,8 +3562,8 @@ static void init_exynos_bcm_calc(struct exynos_bcm_dbg_data *data) {
 	BCM_INFO("%s: Prepare PPMU accumulator done\n",	__func__);
 }
 
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
-static enum hrtimer_restart __nocfi bcm_monitor(struct hrtimer *hrtimer)
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
+static enum hrtimer_restart bcm_monitor(struct hrtimer *hrtimer)
 {
 	unsigned long flags;
 	u32 period;
@@ -4280,7 +3641,7 @@ static int bcm_change_memory_common(unsigned long addr, int numpages,
 	return ret;
 }
 
-int __nocfi exynos_bcm_dbg_load_bin(void)
+int exynos_bcm_dbg_load_bin(void)
 {
 	int ret = 0;
 	struct file *fp = NULL;
@@ -4292,7 +3653,7 @@ int __nocfi exynos_bcm_dbg_load_bin(void)
 	if (bcm_dbg_data->bcm_load_bin)
 		return 0;
 
-	ret = bcm_change_memory_common((unsigned long)bcm_addr,
+	ret = bcm_change_memory_common((unsigned long)bcm_early_vm.addr,
 				BCM_BIN_SIZE, __pgprot(0), __pgprot(PTE_PXN));
 	if (ret) {
 		BCM_ERR("%s: failed to change memory common\n", __func__);
@@ -4314,7 +3675,7 @@ int __nocfi exynos_bcm_dbg_load_bin(void)
 		goto err_fopen;
 	}
 
-	fsize = BCM_BIN_SIZE;
+	fsize = fp->f_path.dentry->d_inode->i_size;
 	BCM_INFO("%s: start, file path %s, size %ld Bytes\n",
 			__func__, BCM_BIN_NAME, fsize);
 	buf = vmalloc(fsize);
@@ -4333,7 +3694,7 @@ int __nocfi exynos_bcm_dbg_load_bin(void)
 	}
 
 	lib_bcm = (char *)bcm_addr;
-	memset((char *)bcm_addr, 0x0, BCM_BIN_SIZE);
+	memset((char *)bcm_addr, 0x0, fsize);
 
 	flush_icache_range((unsigned long)lib_bcm,
 			   (unsigned long)lib_bcm + BCM_BIN_SIZE);
@@ -4370,7 +3731,7 @@ static int exynos_bcm_dbg_pm_suspend(struct device *dev)
 {
 	unsigned int suspend = true;
 	int ret;
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
 	if (!bcm_dbg_data->bcm_load_bin)
 		return 0;
 #endif
@@ -4395,7 +3756,7 @@ static int exynos_bcm_dbg_pm_resume(struct device *dev)
 {
 	unsigned int suspend = false;
 	int ret;
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
 	if (!bcm_dbg_data->bcm_load_bin)
 		return 0;
 #endif
@@ -4417,41 +3778,45 @@ static struct dev_pm_ops exynos_bcm_dbg_pm_ops = {
 	.resume		= exynos_bcm_dbg_pm_resume,
 };
 
-static int bcmdbg_panic_handler(struct notifier_block *nb, unsigned long l,
-		void *buf)
-{
-	exynos_bcm_dbg_stop(PANIC_HANDLE);
-
-	return 0;
-}
-
-static struct notifier_block nb_bcmdbg_panic = {
-	.notifier_call = bcmdbg_panic_handler,
-	.priority = INT_MAX - 1,
-};
-
 static void exynos_bcm_dbg_shutdown(struct platform_device *pdev)
 {
 	if (bcm_dbg_data->bcm_calc->enable)
 		exynos_bcm_calc_enable(0);
 }
 
-static int exynos_bcm_dbg_probe(struct platform_device *pdev)
+static int __init exynos_bcm_dbg_probe(struct platform_device *pdev)
 {
 	int ret = 0;
-	struct reserved_mem *rmem;
-	struct device_node *rmem_np;
 	struct exynos_bcm_dbg_data *data;
 
-	rmem_np = of_parse_phandle(pdev->dev.of_node, "memory-region", 0);
-	rmem = of_reserved_mem_lookup(rmem_np);
-	if (!rmem) {
-		dev_err(&pdev->dev, "failed to acquire memory region\n");
-		return 0;
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
+	int page_size, i;
+	struct page *page;
+	struct page **pages;
+
+	if (!bcm_addr) {
+		BCM_ERR("%s: No virtual address for fd\n", __func__);
+		return -ENOMEM;
 	}
 
-	bcm_reserved.p_addr = rmem->base;
-	bcm_reserved.p_size = rmem->size;
+	page_size = bcm_early_vm.size / PAGE_SIZE;
+	pages = kzalloc(sizeof(struct page *) * page_size, GFP_KERNEL);
+	if (!pages) {
+		BCM_ERR("%s: could not alloc pages\n", __func__);
+		return -ENOMEM;
+	}
+	page = phys_to_page(bcm_early_vm.phys_addr);
+	for (i = 0; i < page_size; i++)
+		pages[i] = page++;
+
+	ret = map_vm_area(&bcm_early_vm, PAGE_KERNEL, pages);
+	if (ret) {
+		BCM_ERR("failed to mapping between virt and phys for firmware");
+		kfree(pages);
+		return -ENOMEM;
+	}
+	kfree(pages);
+#endif
 
 	data = kzalloc(sizeof(struct exynos_bcm_dbg_data), GFP_KERNEL);
 	if (data == NULL) {
@@ -4465,15 +3830,13 @@ static int exynos_bcm_dbg_probe(struct platform_device *pdev)
 
 	spin_lock_init(&data->lock);
 
-#if !(defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE))
+#ifndef CONFIG_EXYNOS_BCM_DBG_GNR
 	ret = exynos_bcm_dbg_init(data);
 	if (ret) {
 		BCM_ERR("%s: failed to bcm init\n", __func__);
 		goto err_init;
 	}
-	memset((char *)data->dump_addr.v_addr, 0x0, data->dump_addr.p_size);
 #endif
-	atomic_notifier_chain_register(&panic_notifier_list, &nb_bcmdbg_panic);
 
 	platform_set_drvdata(pdev, data);
 
@@ -4481,7 +3844,7 @@ static int exynos_bcm_dbg_probe(struct platform_device *pdev)
 	if (ret)
 		BCM_ERR("%s: failed creat sysfs for Exynos BCM DBG\n", __func__);
 
-#if defined(CONFIG_EXYNOS_ITMON) || defined(CONFIG_EXYNOS_ITMON_MODULE)
+#ifdef CONFIG_EXYNOS_ITMON
 	data->itmon_notifier.notifier_call = exynos_bcm_dbg_itmon_notifier;
 	itmon_notifier_chain_register(&data->itmon_notifier);
 #endif
@@ -4491,12 +3854,11 @@ static int exynos_bcm_dbg_probe(struct platform_device *pdev)
 
 	return 0;
 
-#if !(defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE))
+#ifndef CONFIG_EXYNOS_BCM_DBG_GNR
 err_init:
 #endif
 	kfree(data);
 	data = NULL;
-	bcm_dbg_data = NULL;
 err_data:
 	return ret;
 }
@@ -4525,11 +3887,17 @@ static int exynos_bcm_dbg_remove(struct platform_device *pdev)
 	return 0;
 }
 
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
-static int bcm_setup(char *str)
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
+static int __init bcm_setup(char *str)
 {
 	if (kstrtoul(str, 0, (unsigned long *)&bcm_addr))
 		goto out;
+
+	bcm_early_vm.phys_addr = memblock_alloc(BCM_BIN_SIZE, SZ_4K);
+	bcm_early_vm.addr = (void *)bcm_addr;
+	bcm_early_vm.size = BCM_BIN_SIZE + PAGE_SIZE;
+
+	vm_area_add_early(&bcm_early_vm);
 
 	return 0;
 out:

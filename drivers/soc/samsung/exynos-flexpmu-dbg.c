@@ -28,8 +28,8 @@
 #define FLEXPMU_DBG_FUNC_READ(__name)		\
 	exynos_flexpmu_dbg_ ## __name ## _read
 
-#define BUF_MAX_LINE	10
-#define BUF_LINE_SIZE	255
+#define BUF_MAX_LINE	20
+#define BUF_LINE_SIZE	50
 #define BUF_SIZE	(BUF_MAX_LINE * BUF_LINE_SIZE)
 
 #define DEC_PRINT	1
@@ -45,7 +45,6 @@ enum flexpmu_debugfs_id {
 	FID_MIF_ALWAYS_ON,
 	FID_LPM_COUNT,
 	FID_APM_REQ_INFO,
-	FID_MID_DVS_EN,
 	FID_MAX
 };
 
@@ -58,7 +57,6 @@ char *flexpmu_debugfs_name[FID_MAX] = {
 	"mif_always_on",
 	"lpm_count",
 	"apm_req_info",
-	"mid_dvs_en",
 };
 
 /* enum for data lines */
@@ -111,9 +109,6 @@ enum data_id {
 	DID_MIFAUD1,
 	DID_MIFVTS0,
 	DID_MIFVTS1,
-	DID_MIFCP0,
-	DID_MIFCP1,
-	DID_MID_DVS_EN,
 	DID_MAX
 };
 
@@ -145,12 +140,11 @@ struct flexpmu_apm_req_info {
 
 void __iomem *rtc_base;
 
-#define MIF_MASTER_MAX		4
+#define MIF_MASTER_MAX		3
 char *flexpmu_master_name[MIF_MASTER_MAX] = {
 	"MIF_AP",
 	"MIF_AUD",
 	"MIF_VTS",
-	"MIF_CP",
 };
 
 struct flexpmu_apm_req_info apm_req[MIF_MASTER_MAX];
@@ -160,6 +154,18 @@ u32 acpm_get_mifdn_count(void)
 	return __raw_readl(flexpmu_dbg_base + (DATA_LINE * DID_MIF_COUNT_SLEEP) + DATA_IDX + 4);
 }
 EXPORT_SYMBOL_GPL(acpm_get_mifdn_count);
+
+u32 acpm_get_apsocdn_total_count(void)
+{
+	return __raw_readl(flexpmu_dbg_base + (DATA_LINE * DID_SOC_COUNT) + DATA_IDX + 4);
+}
+EXPORT_SYMBOL_GPL(acpm_get_apsocdn_total_count);
+
+u32 acpm_get_apsocdn_sicd_count(void)
+{
+	return __raw_readl(flexpmu_dbg_base + (DATA_LINE * DID_AP_COUNT_SICD) + DATA_IDX + 4);
+}
+EXPORT_SYMBOL_GPL(acpm_get_apsocdn_sicd_count);
 
 u32 acpm_get_apsocdn_count(void)
 {
@@ -172,20 +178,6 @@ u32 acpm_get_early_wakeup_count(void)
 	return __raw_readl(flexpmu_dbg_base + (DATA_LINE * DID_AP_COUNT_SLEEP) + DATA_IDX);
 }
 EXPORT_SYMBOL_GPL(acpm_get_early_wakeup_count);
-
-/*notify to flexpmu, it is SICD w MIF(is_dsu_cpd=0) or SICD wo MIF(is_dsu_cpd=1).*/
-u32 acpm_noti_dsu_cpd(bool is_dsu_cpd)
-{
-	__raw_writel(is_dsu_cpd, flexpmu_dbg_base + (DATA_LINE * DID_MIF_ALWAYS_ON) + DATA_IDX);
-	return 0;
-}
-EXPORT_SYMBOL_GPL(acpm_noti_dsu_cpd);
-
-u32 acpm_get_dsu_cpd(void)
-{
-	return __raw_readl(flexpmu_dbg_base + (DATA_LINE * DID_MIF_ALWAYS_ON) + DATA_IDX);
-}
-EXPORT_SYMBOL_GPL(acpm_get_dsu_cpd);
 
 #define MIF_REQ_MASK		(0x00FF0000)
 #define MIF_REQ_SHIFT		(16)
@@ -373,21 +365,6 @@ static ssize_t exynos_flexpmu_dbg_mif_always_on_read(int fid, char *buf)
 	return ret;
 }
 
-static ssize_t exynos_flexpmu_dbg_mid_dvs_en_read(int fid, char *buf)
-{
-	ssize_t ret = 0;
-	int data_count = 0;
-
-	struct flexpmu_dbg_print_arg print_arg[BUF_MAX_LINE] = {
-		{"MID DVS states", HEX_PRINT},
-		{"MID DVS enable", DEC_PRINT},
-	};
-
-	ret = print_dataline_2(DID_MID_DVS_EN, print_arg, ret, buf, &data_count);
-
-	return ret;
-}
-
 static ssize_t exynos_flexpmu_dbg_lpm_count_read(int fid, char *buf)
 {
 	ssize_t ret = 0;
@@ -462,16 +439,14 @@ static ssize_t exynos_flexpmu_dbg_apm_req_info_read(int fid, char *buf)
 			apm_req[i].total_time_us += apm_req[i].active_since_us;
 		}
 
-		if (BUF_SIZE - (BUF_MAX_LINE * 3) > ret) {
-			ret += snprintf(buf + ret, BUF_SIZE - ret,
-					"%8s : %32lld %32lld %32lld %32d\n",
-					flexpmu_master_name[i],
-					apm_req[i].active_since_us,
-					apm_req[i].last_rel_us,
-					apm_req[i].total_time_us,
-					apm_req[i].total_count);
+		ret += snprintf(buf + ret, BUF_SIZE - ret,
+				"%8s : %32lld %32lld %32lld %32d\n",
+				flexpmu_master_name[i],
+				apm_req[i].active_since_us,
+				apm_req[i].last_rel_us,
+				apm_req[i].total_time_us,
+				apm_req[i].total_count);
 		}
-	}
 
 		return ret;
 }
@@ -485,7 +460,6 @@ static ssize_t (*flexpmu_debugfs_read_fptr[FID_MAX])(int, char *) = {
 	FLEXPMU_DBG_FUNC_READ(mif_always_on),
 	FLEXPMU_DBG_FUNC_READ(lpm_count),
 	FLEXPMU_DBG_FUNC_READ(apm_req_info),
-	FLEXPMU_DBG_FUNC_READ(mid_dvs_en),
 };
 
 static ssize_t exynos_flexpmu_dbg_read(struct file *file, char __user *user_buf,
@@ -524,16 +498,6 @@ static ssize_t exynos_flexpmu_dbg_write(struct file *file, const char __user *us
 					(DATA_LINE * DID_MIF_ALWAYS_ON) + 0xC);
 		}
 		break;
-	case FID_MID_DVS_EN:
-		if (buf[0] == '0') {
-			__raw_writel(0, flexpmu_dbg_base +
-					(DATA_LINE * DID_MID_DVS_EN) + 0xC);
-		}
-		if (buf[0] == '1') {
-			__raw_writel(1, flexpmu_dbg_base +
-					(DATA_LINE * DID_MID_DVS_EN) + 0xC);
-		}
-		break;
 	default:
 		break;
 	}
@@ -548,7 +512,6 @@ static int exynos_flexpmu_dbg_probe(struct platform_device *pdev)
 	unsigned int len = 0;
 	unsigned int data_base = 0;
 	unsigned int data_size = 0;
-	unsigned int mid_dvs_en = 0;
 	int i;
 
 	flexpmu_dbg_info = kzalloc(sizeof(struct dbgfs_info) * FID_MAX, GFP_KERNEL);
@@ -577,15 +540,6 @@ static int exynos_flexpmu_dbg_probe(struct platform_device *pdev)
 	}
 	data_size = be32_to_cpup(prop);
 
-	prop = of_get_property(pdev->dev.of_node, "mid-dvs-en", &len);
-	if (!prop) {
-		pr_info("%s %s: can not read mid-dvs-en in DT\n",
-				EXYNOS_FLEXPMU_DBG_PREFIX, __func__);
-		mid_dvs_en = 0;
-	} else {
-		mid_dvs_en = be32_to_cpup(prop);
-	}
-
 	if (data_base && data_size)
 		flexpmu_dbg_base = ioremap(data_base, data_size);
 
@@ -612,11 +566,6 @@ static int exynos_flexpmu_dbg_probe(struct platform_device *pdev)
 	if (!rtc_base) {
 		dev_info(&pdev->dev,
 				"apm_req_info node is not available!\n");
-	}
-
-	if (mid_dvs_en == 1) {
-		__raw_writel(1, flexpmu_dbg_base + (DATA_LINE * DID_MID_DVS_EN) + 0xC);
-		pr_info("%s: MID DVS enabled\n", EXYNOS_FLEXPMU_DBG_PREFIX);
 	}
 
 	platform_set_drvdata(pdev, flexpmu_dbg_info);
@@ -657,10 +606,8 @@ static struct platform_driver exynos_flexpmu_dbg_drv = {
 	},
 };
 
-static int exynos_flexpmu_dbg_init(void)
+static int __init exynos_flexpmu_dbg_init(void)
 {
 	return platform_driver_register(&exynos_flexpmu_dbg_drv);
 }
 late_initcall(exynos_flexpmu_dbg_init);
-
-MODULE_LICENSE("GPL");

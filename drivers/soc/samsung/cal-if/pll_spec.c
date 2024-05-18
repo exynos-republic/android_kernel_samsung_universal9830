@@ -1,87 +1,5 @@
 #include "cmucal.h"
-#include <linux/module.h>
 #include "ra.h"
-
-static struct pll_spec gfrd2021rpll_spec = {
-	1,		63,
-	32,		511,
-	0,		6,
-	0,		0,
-	2*MHZ,		52*MHZ,
-	600*MHZ,	2400*MHZ,
-	9.4*MHZ,	2400*MHZ,
-	150,		500,
-	0,		4294967295,
-	RPLL,
-};
-
-static struct pll_spec gpll0516X_spec = {
-	1,		63,
-	64,		1023,
-	0,		6,
-	0,		0,
-	4*MHZ,		12*MHZ,
-	2500*MHZ,	6600*MHZ,
-	39.06*MHZ,	6600*MHZ,
-	150,		0,
-	0,		0,
-	HIGH_FREQ_PLL,
-};
-
-static struct pll_spec gpll0522X_spec = {
-	1,		63,
-	64,		1023,
-	0,		6,
-	0,		0,
-	4*MHZ,		12*MHZ,
-	1150*MHZ,	3000*MHZ,
-	18*MHZ,		3000*MHZ,
-	150,		0,
-};
-
-static struct pll_spec gpll0517X_spec = {
-	1,		63,
-	64,		1023,
-	0,		6,
-	0,		0,
-	4*MHZ,		12*MHZ,
-	950*MHZ,	2400*MHZ,
-	14.84*MHZ,	2400*MHZ,
-	150,		0,
-};
-
-static struct pll_spec gpll0518X_spec = {
-	1,		63,
-	64,		1023,
-	0,		6,
-	0,		0,
-	2*MHZ,		8*MHZ,
-	600*MHZ,	1200*MHZ,
-	9.5*MHZ,	1200*MHZ,
-	150,		0,
-};
-
-static struct pll_spec gpll0530X_spec = {
-	1,		63,
-	64,		1023,
-	0,		6,
-	0,		0,
-	6*MHZ,		30*MHZ,
-	3300*MHZ,	6600*MHZ,
-	51.56*MHZ,	6600*MHZ,
-	500,		0,
-};
-
-static struct pll_spec gpll0532X_spec = {
-	1,		63,
-	16,		511,
-	0,		6,
-	0,		0,
-	6*MHZ,		30*MHZ,
-	600*MHZ,	1200*MHZ,
-	9.5*MHZ,	1200*MHZ,
-	500,		0,
-};
 
 static struct pll_spec gpll1416X_spec = {
 	1,		63,
@@ -345,8 +263,6 @@ static struct pll_spec gpll0716X_spec = {
 	3300*MHZ,	6600*MHZ,
 	39.06*MHZ,	6600*MHZ,
 	150,		0,
-	0,		0,
-	HIGH_FREQ_PLL,
 };
 
 static struct pll_spec gpll0717X_spec = {
@@ -457,27 +373,6 @@ struct pll_spec *pll_get_spec(struct cmucal_pll *pll)
 	case pll_0718x:
 		pll_spec = &gpll0718X_spec;
 		break;
-	case frd_2021_rpll:
-		pll_spec = &gfrd2021rpll_spec;
-		break;
-	case pll_0516x:
-		pll_spec = &gpll0516X_spec;
-		break;
-	case pll_0522x:
-		pll_spec = &gpll0522X_spec;
-		break;
-	case pll_0517x:
-		pll_spec = &gpll0517X_spec;
-		break;
-	case pll_0518x:
-		pll_spec = &gpll0518X_spec;
-		break;
-	case pll_0530x:
-		pll_spec = &gpll0530X_spec;
-		break;
-	case pll_0532x:
-		pll_spec = &gpll0532X_spec;
-		break;
 	default:
 		pll_spec = NULL;
 	}
@@ -506,40 +401,6 @@ static int __pll_find_k(unsigned int p, unsigned int m, unsigned int s,
 	return rate - (m << 16);
 }
 
-static unsigned int __pll_find_f(unsigned int p, unsigned int m, unsigned int s,
-				 unsigned long long fin,
-				 unsigned long long rate)
-{
-	rate <<= 24;
-	rate *= p << s;
-	do_div(rate, fin);
-
-	if (rate > (m << 24))
-		rate -= (m << 24);
-	else
-		rate -= ((m - 1) << 24);
-
-	return rate << 8;
-}
-
-int pll_get_info(struct cmucal_pll *pll)
-{
-	struct pll_spec *pll_spec;
-
-	pll_spec = pll_get_spec(pll);
-	if (!pll_spec) {
-		pr_err("un-support pll type\n");
-		return -EVCLKINVAL;
-	}
-
-	pll->lock_time = pll_spec->lock_time;
-	pll->flock_time = pll_spec->flock_time;
-	pll->freq_type = pll_spec->freq_type;
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(pll_get_info);
-
 int pll_get_locktime(struct cmucal_pll *pll)
 {
 	struct pll_spec *pll_spec;
@@ -564,7 +425,7 @@ int pll_find_table(struct cmucal_pll *pll,
 		   unsigned long long rate_hz)
 {
 	struct pll_spec *pll_spec;
-	unsigned int p, m, s, f, m_temp;
+	unsigned int p, m, s;
 	int k;
 	unsigned long long fref, fvco, fout;
 	unsigned long long min_diff = 0, tmp;
@@ -593,33 +454,16 @@ int pll_find_table(struct cmucal_pll *pll,
 
 			if (is_normal_pll(pll)) {
 				k = 0;
-				f = 0;
 				fvco = fin * m;
 			} else {
-				if (is_frac_r_pll(pll->clk)) {
-					/* check f value  */
-					f = __pll_find_f(p, m, s, fin, rate);
-					if ((f < pll_spec->fdiv_min) ||
-							(f > pll_spec->fdiv_max))
-						continue;
+				/* check k value  */
+				k = __pll_find_k(p, m, s, fin, rate);
+				if ((k < pll_spec->kdiv_min) ||
+				    (k > pll_spec->kdiv_max))
+					continue;
 
-					if (f >> 31)
-						m_temp = m - 1;
-					else
-						m_temp = m;
-
-					fvco = fin * ((m_temp << 24) + (f >> 8));
-					fvco >>= 24;
-				} else {
-					/* check k value  */
-					k = __pll_find_k(p, m, s, fin, rate);
-					if ((k < pll_spec->kdiv_min) ||
-							(k > pll_spec->kdiv_max))
-						continue;
-
-					fvco = fin * ((m << 16) + k);
-					fvco >>= 16;
-				}
+				fvco = fin * ((m << 16) + k);
+				fvco >>= 16;
 			}
 
 			/* check fvco */
@@ -639,7 +483,6 @@ int pll_find_table(struct cmucal_pll *pll,
 					table->mdiv = m;
 					table->sdiv = s;
 					table->kdiv = k;
-					table->fdiv = f;
 
 					return 0;
 				}
@@ -664,7 +507,6 @@ int pll_find_table(struct cmucal_pll *pll,
 		table->mdiv = min_m;
 		table->sdiv = min_s;
 		table->kdiv = 0;
-		table->fdiv = 0;
 
 		return 0;
 	}
@@ -672,5 +514,3 @@ int pll_find_table(struct cmucal_pll *pll,
 	return -EVCLKINVAL;
 }
 EXPORT_SYMBOL_GPL(pll_find_table);
-
-MODULE_LICENSE("GPL");

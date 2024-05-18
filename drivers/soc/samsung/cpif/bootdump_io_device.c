@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2019 Samsung Electronics.
  *
@@ -36,7 +35,7 @@
 
 static int bootdump_open(struct inode *inode, struct file *filp)
 {
-	struct io_device *iod = to_io_device(inode->i_cdev);
+	struct io_device *iod = to_io_device(filp->private_data);
 	struct modem_shared *msd = iod->msd;
 	struct link_device *ld;
 	int ret;
@@ -57,7 +56,7 @@ static int bootdump_open(struct inode *inode, struct file *filp)
 		}
 	}
 
-	mif_info("%s (opened %d) by %s\n",
+	mif_err("%s (opened %d) by %s\n",
 		iod->name, atomic_read(&iod->opened), current->comm);
 
 	return 0;
@@ -84,7 +83,7 @@ static int bootdump_release(struct inode *inode, struct file *filp)
 			ld->terminate_comm(ld, iod);
 	}
 
-	mif_info("%s (opened %d) by %s\n",
+	mif_err("%s (opened %d) by %s\n",
 		iod->name, atomic_read(&iod->opened), current->comm);
 
 	return 0;
@@ -123,25 +122,24 @@ static unsigned int bootdump_poll(struct file *filp, struct poll_table_struct *w
 	case STATE_CRASH_WATCHDOG:
 		/* report crash only if iod is fmt/boot device */
 		if (iod->format == IPC_FMT) {
-			mif_err_limited("FMT %s: %s.state == %s\n",
-				iod->name, mc->name, mc_state(mc));
+			mif_err("%s: %s.state == %s\n", iod->name, mc->name,
+				mc_state(mc));
 			return POLLHUP;
 		} else if (iod->format == IPC_BOOT || ld->is_boot_ch(iod->ch)) {
 			if (!skb_queue_empty(rxq))
 				return POLLIN | POLLRDNORM;
 
-			mif_err_limited("BOOT %s: %s.state == %s\n",
-				iod->name, mc->name, mc_state(mc));
+			mif_err("%s: %s.state == %s\n", iod->name, mc->name,
+				mc_state(mc));
 			return POLLHUP;
 		} else if (iod->format == IPC_DUMP || ld->is_dump_ch(iod->ch)) {
 			if (!skb_queue_empty(rxq))
 				return POLLIN | POLLRDNORM;
-
-			mif_err_limited("DUMP %s: %s.state == %s\n",
-				iod->name, mc->name, mc_state(mc));
+			else
+				return 0;
 		} else {
-			mif_err_limited("%s: %s.state == %s\n",
-				iod->name, mc->name, mc_state(mc));
+			mif_err("%s: %s.state == %s\n", iod->name, mc->name,
+				mc_state(mc));
 
 			/* give delay to prevent infinite sys_poll call from
 			 * select() in APP layer without 'sleep' user call takes
@@ -201,10 +199,6 @@ static long bootdump_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
 			return ret;
 		}
 
-#if IS_ENABLED(CONFIG_CPIF_TP_MONITOR)
-		tpmon_init();
-#endif
-
 		switch (mode.idx) {
 		case CP_BOOT_MODE_NORMAL:
 			mif_info("%s: normal boot mode\n", iod->name);
@@ -247,6 +241,14 @@ static long bootdump_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
 			mif_err("security_req() error:%d\n", ret);
 			return ret;
 		}
+
+#if defined(CONFIG_SEC_MODEM_S5000AP) && defined(CONFIG_SEC_MODEM_S5100)
+		if (ld->security_cp2cp_baaw_req) {
+			ret = ld->security_cp2cp_baaw_req(ld, iod, arg);
+			if (ret)
+				mif_err("ERR ld->security_cp2cp_baaw_req():%d\n", ret);
+		}
+#endif
 		return ret;
 
 	case IOCTL_LOAD_CP_IMAGE:
@@ -301,7 +303,7 @@ static long bootdump_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
 			return -EINVAL;
 		}
 
-		mif_info("%s: IOCTL_COMPLETE_NORMAL_BOOTUP\n", iod->name);
+		mif_err("%s: IOCTL_COMPLETE_NORMAL_BOOTUP\n", iod->name);
 		return mc->ops.complete_normal_boot(mc);
 
 	case IOCTL_GET_CP_STATUS:
@@ -379,7 +381,18 @@ static long bootdump_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
 				CP_CRASH_INFO_SIZE - strlen(CP_CRASH_TAG)))
 				return -EFAULT;
 		mif_info("Crash Reason: %s\n", buff);
+
+#if defined(CONFIG_SEC_MODEM_S5000AP) && defined(CONFIG_SEC_MODEM_S5100)
+		if (check_cp_upload_cnt())
+			panic("%s", buff);
+		else {
+			mif_info("Wait another IOCTL_TRIGGER_KERNEL_PANIC\n");
+			while (1)
+				msleep(1000);
+		}
+#else
 		panic("%s", buff);
+#endif
 		return 0;
 	}
 
@@ -590,7 +603,6 @@ static ssize_t bootdump_read(struct file *filp, char *buf, size_t count,
 
 	if (skb_queue_empty(rxq)) {
 		long tmo = msecs_to_jiffies(100);
-
 		wait_event_timeout(iod->wq, !skb_queue_empty(rxq), tmo);
 	}
 
@@ -610,7 +622,6 @@ static ssize_t bootdump_read(struct file *filp, char *buf, size_t count,
 
 	if (iod->ch == SIPC_CH_ID_CPLOG1) {
 		struct net_device *ndev = iod->ndev;
-
 		if (!ndev) {
 			mif_err("%s: ERR! no iod->ndev\n", iod->name);
 		} else {

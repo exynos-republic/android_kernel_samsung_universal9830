@@ -13,12 +13,7 @@
 #ifndef __EXYNOS_HDCP2_LOG_H__
 #define __EXYNOS_HDCP2_LOG_H__
 
-#if IS_ENABLED(CONFIG_SEC_DISPLAYPORT_LOGGER)
-#include "../../../video/fbdev/exynos/dp_logger/dp_logger.h"
-#endif
-#ifdef CONFIG_SEC_DISPLAYPORT_BIGDATA
-#include "../../../video/fbdev/exynos/dp_logger/displayport_bigdata.h"
-#endif
+#include <linux/dp_logger.h>
 
 #undef HDCP_DEBUG
 

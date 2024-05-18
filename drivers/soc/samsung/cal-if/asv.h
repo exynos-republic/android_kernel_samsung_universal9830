@@ -9,6 +9,4 @@ extern void id_get_rev(unsigned int *main_rev, unsigned int *sub_rev);
 
 extern int id_get_product_line(void);
 extern int id_get_asb_ver(void);
-
-extern int print_asv_table(void);
 #endif

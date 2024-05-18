@@ -13,9 +13,13 @@
 #include <linux/uaccess.h>
 #include <linux/smc.h>
 #include <asm/cacheflush.h>
-#include <soc/samsung/exynos-smc.h>
+#include <linux/smc.h>
 #include <linux/types.h>
 #include <linux/delay.h>
+
+#ifdef CONFIG_SEC_DISPLAYPORT_BIGDATA
+#include <linux/displayport_bigdata.h>
+#endif
 
 #include "../exynos-hdcp2.h"
 #include "../exynos-hdcp2-log.h"
@@ -35,15 +39,17 @@ int dplink_emul_handler(int cmd)
 }
 #endif
 
+extern uint32_t func_test_mode;
+
 static DEFINE_MUTEX(hdcp_auth_mutex);
 /* current link data */
 static struct hdcp_link_data *lk_data;
 
+extern struct hdcp_session_list g_hdcp_session_list;
 extern uint8_t rp_ready;
 extern enum auth_state auth_proc_state;
 struct hdcp_sess_info ss_info;
 struct hdcp_link_info lk_info;
-extern struct hdcp_session_list g_hdcp_session_list;
 
 int hdcp_dplink_get_rxinfo(uint8_t *status)
 {
@@ -142,13 +148,12 @@ int do_dplink_auth(struct hdcp_link_info *lk_handle)
 			if (dplink_evaluate_repeater(lk_data) == TRUE) {
 				/* if it is a repeater, verify Rcv ID list */
 				UPDATE_LINK_STATE(lk_data, LINK_ST_A6_WAIT_RECEIVER_ID_LIST);
-#if defined(CONFIG_HDCP2_FUNC_TEST_MODE)
-				hdcp_enabled = 1;
-				hdcp_info("it`s func test mode.\n");
-#else
 				hdcp_info("It`s repeater link !\n");
-				hdcp_enabled = 0;
-#endif
+				if (func_test_mode) {
+					hdcp_enabled = 1;
+					hdcp_info("it`s func test mode.\n");
+				} else
+					hdcp_enabled = 0;
 			} else {
 				/* if it is not a repeater, complete authentication */
 				UPDATE_LINK_STATE(lk_data, LINK_ST_A5_AUTHENTICATED);
@@ -211,7 +216,6 @@ int do_dplink_auth(struct hdcp_link_info *lk_handle)
 				UPDATE_LINK_STATE(lk_data, LINK_ST_H1_TX_LOW_VALUE_CONTENT);
 			} else {
 				UPDATE_LINK_STATE(lk_data, LINK_ST_A5_AUTHENTICATED);
-				auth_proc_state = HDCP_AUTH_PROCESS_DONE;
 			}
 			break;
 		default:
@@ -255,9 +259,7 @@ int hdcp_dplink_authenticate(void)
 		ret = do_dplink_auth(&lk_info);
 		if (ret == HDCP_SUCCESS) {
 			hdcp_info("Success HDCP authenticate done.\n");
-#if IS_ENABLED(CONFIG_SEC_DISPLAYPORT_LOGGER)
 			dp_logger_print("soc HDCP2 authenticate done.\n");
-#endif
 #ifdef CONFIG_SEC_DISPLAYPORT_BIGDATA
 			secdp_bigdata_clr_error_cnt(ERR_HDCP_AUTH);
 #endif
@@ -268,18 +270,14 @@ int hdcp_dplink_authenticate(void)
 			/* auth_proc_state flag check */
 			if (auth_proc_state == HDCP_AUTH_PROCESS_STOP) {
 				hdcp_info("Stop authenticate.\n");
-#if IS_ENABLED(CONFIG_SEC_DISPLAYPORT_LOGGER)
 				dp_logger_print("soc HDCP2 Stop authenticate.\n");
-#endif
 				auth_proc_state = HDCP_AUTH_PROCESS_IDLE;
 				break;
 			}
 			/* retry */
 			dplink_clear_irqflag_all();
 			hdcp_err("HDCP auth failed. retry(%d)\n", retry_cnt);
-#if IS_ENABLED(CONFIG_SEC_DISPLAYPORT_LOGGER)
 			dp_logger_print("soc HDCP2 auth failed:%d, retry(%d)\n", ret, retry_cnt);
-#endif
 #ifdef CONFIG_SEC_DISPLAYPORT_BIGDATA
 			secdp_bigdata_inc_error_cnt(ERR_HDCP_AUTH);
 #endif
@@ -309,5 +307,3 @@ int hdcp_dplink_stream_manage(void)
 	/* todo: update stream manage information */
 	return 0;
 }
-
-MODULE_LICENSE("GPL");

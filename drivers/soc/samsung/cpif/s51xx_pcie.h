@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2010 Samsung Electronics.
  *
@@ -78,6 +77,7 @@ int s5100_try_gpio_cp_wakeup(struct modem_ctl *mc);
 int s5100_send_panic_noti_ext(void);
 int s5100_set_outbound_atu(struct modem_ctl *mc, struct cp_btl *btl, loff_t *pos, u32 map_size);
 
+// PCIE Dynamic lane change : from //drivers/pci
 int exynos_pcie_rc_lanechange(int ch_num, int lane);
 int exynos_pcie_rc_speedchange(int ch_num, int spd);
 

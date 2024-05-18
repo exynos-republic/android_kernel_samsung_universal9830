@@ -1,6 +1,6 @@
 #include "pmucal_local.h"
 #include "pmucal_rae.h"
-#include <soc/samsung/debug-snapshot.h>
+#include <soc/samsung/exynos-debug.h>
 #include <linux/sec_debug.h>
 
 #ifndef PWRCAL_TARGET_LINUX
@@ -18,7 +18,6 @@ struct pmucal_pd *pmucal_blkpwr_list[PMUCAL_NUM_PDS];
 int pmucal_local_enable(unsigned int pd_id)
 {
 	int ret = 0;
-	struct pmucal_seq pd_seq;
 
 	dbg_snapshot_pmu(pd_id, __func__, DSS_FLAG_IN);
 
@@ -41,21 +40,14 @@ int pmucal_local_enable(unsigned int pd_id)
 	if (ret) {
 		pr_err("%s %s: error on handling enable sequence. (pd_id : %d)\n",
 				PMUCAL_PREFIX, __func__, pd_id);
-
-		pd_seq = pmucal_pd_list[pd_id].status[0];
-		pr_info("%s STATE(0x%x) = 0x%x IN(0x%x) = 0x%x \n",
-				PMUCAL_PREFIX, pd_seq.offset + 0x4,
-				__raw_readl(pd_seq.base_va + pd_seq.offset + 0x4),
-				pd_seq.offset + 0x20,
-				__raw_readl(pd_seq.base_va + pd_seq.offset + 0x20));
 		goto err_out;
 	}
 
 	if (pmucal_pd_list[pd_id].need_smc) {
 		ret = exynos_pd_tz_restore(pmucal_pd_list[pd_id].need_smc);
 		if (ret) {
-			pr_err("%s %s: DTZPC restore smc error. (pd_id : %d) ret = %d\n",
-					PMUCAL_PREFIX, __func__, pd_id, ret);
+			pr_err("%s %s: DTZPC restore smc error. (pd_id : %d)\n",
+					PMUCAL_PREFIX, __func__, pd_id);
 			goto err_out;
 		}
 	}
@@ -77,7 +69,7 @@ int pmucal_local_enable(unsigned int pd_id)
 
 err_out:
 	dump_stack();
-	dbg_snapshot_expire_watchdog();
+	s3c2410wdt_set_emergency_reset(0, 0);
 
 	return ret;
 }
@@ -116,8 +108,8 @@ int pmucal_local_disable(unsigned int pd_id)
 	if (pmucal_pd_list[pd_id].need_smc) {
 		ret = exynos_pd_tz_save(pmucal_pd_list[pd_id].need_smc);
 		if (ret) {
-			pr_err("%s %s: DTZPC save smc error. (pd_id : %d) ret = %d\n",
-					PMUCAL_PREFIX, __func__, pd_id, ret);
+			pr_err("%s %s: DTZPC save smc error. (pd_id : %d)\n",
+					PMUCAL_PREFIX, __func__, pd_id);
 			goto err_out;
 		}
 	}
@@ -146,10 +138,9 @@ int pmucal_local_disable(unsigned int pd_id)
 	return 0;
 
 err_out:
-	pr_auto(ASL1, "%s occur error at power off!\n", pmucal_pd_list[pd_id].name);
 	secdbg_exin_set_epd(pmucal_pd_list[pd_id].name);
 	dump_stack();
-	dbg_snapshot_expire_watchdog();
+	s3c2410wdt_set_emergency_reset(0, 0);
 
 	return ret;
 }
@@ -213,7 +204,7 @@ void pmucal_local_set_smc_id(unsigned int pd_id, unsigned int need_smc)
  *
  *  Returns 0 on success. Otherwise, negative error code.
  */
-int pmucal_local_init(void)
+int __init pmucal_local_init(void)
 {
 	int ret = 0, i;
 

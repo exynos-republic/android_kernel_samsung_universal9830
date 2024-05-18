@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2015 Samsung Electronics.
  *
@@ -35,30 +34,13 @@ int register_modem_event_notifier(struct notifier_block *nb)
 
 	return raw_notifier_chain_register(&modem_event_notifier, nb);
 }
-EXPORT_SYMBOL(register_modem_event_notifier);
 
-void modem_notify_event(enum modem_event evt, void *data)
+void modem_notify_event(enum modem_event evt, void *mc)
 {
-	int ret;
-	struct modem_ctl *mc = (struct modem_ctl *)data;
-
-#if IS_ENABLED(CONFIG_REINIT_VSS)
-	switch (evt) {
-	case MODEM_EVENT_RESET:
-	case MODEM_EVENT_EXIT:
-	case MODEM_EVENT_WATCHDOG:
-		reinit_completion(&mc->vss_stop);
-		break;
-	default:
-		break;
-	}
-#endif
-
-	mif_info("event notify (%d) ++\n", evt);
-	ret = raw_notifier_call_chain(&modem_event_notifier, evt, mc);
-	mif_info("event notify (%d) --\n", evt);
+	mif_err("event notify (%d) ++\n", evt);
+	raw_notifier_call_chain(&modem_event_notifier, evt, mc);
+	mif_err("event notify (%d) --\n", evt);
 }
-EXPORT_SYMBOL(modem_notify_event);
 
 #if defined(CONFIG_SUSPEND_DURING_VOICE_CALL)
 int register_modem_voice_call_event_notifier(struct notifier_block *nb)
@@ -76,3 +58,4 @@ void modem_voice_call_notify_event(enum modem_voice_call_event evt, void *data)
 	mif_err("event notify (%d) --\n", evt);
 }
 #endif
+

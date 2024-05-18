@@ -28,7 +28,7 @@ static struct sdesc *alloc_sdesc(struct crypto_shash *alg)
 	if (!sdesc)
 		return ERR_PTR(-ENOMEM);
 	sdesc->shash.tfm = alg;
-
+	sdesc->shash.flags = 0x0;
 	return sdesc;
 }
 
@@ -62,4 +62,3 @@ int hdcp_calc_sha1(u8 *digest, const u8 *buf, unsigned int buflen)
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(hdcp_calc_sha1);

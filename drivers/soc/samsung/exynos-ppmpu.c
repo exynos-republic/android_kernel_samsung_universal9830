@@ -22,8 +22,8 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/debugfs.h>
+#include <linux/smc.h>
 
-#include <soc/samsung/exynos-smc.h>
 #include <soc/samsung/exynos-ppmpu.h>
 
 
@@ -73,11 +73,6 @@ static irqreturn_t exynos_ppmpu_irq_handler_thread(int irq, void *dev_id)
 
 	if (data->need_log == PPMPU_SKIP_FAIL_INFO_LOGGING) {
 		pr_debug("PPMPU_FAIL_DETECTOR: Ignore PPMPU illegal reads\n");
-		return IRQ_HANDLED;
-	}
-
-	if (data->need_log != PPMPU_NEED_FAIL_INFO_LOGGING) {
-		pr_debug("PPMPU_FAIL_DETECTOR: No PPMPU illegal reads\n");
 		return IRQ_HANDLED;
 	}
 
@@ -262,11 +257,11 @@ static int exynos_ppmpu_probe(struct platform_device *pdev)
 		goto out;
 	}
 
-	data->fail_info = dmam_alloc_coherent(data->dev,
+	data->fail_info = dma_zalloc_coherent(data->dev,
 						sizeof(struct ppmpu_fail_info) *
 						data->ch_num,
 						&data->fail_info_pa,
-						__GFP_ZERO);
+						GFP_KERNEL);
 	if (!data->fail_info) {
 		dev_err(data->dev, "Fail to allocate memory(ppmpu_fail_info)\n");
 		ret = -ENOMEM;
@@ -373,7 +368,6 @@ static const struct of_device_id exynos_ppmpu_of_match_table[] = {
 	{ .compatible = "samsung,exynos-ppmpu", },
 	{ },
 };
-MODULE_DEVICE_TABLE(of, exynos_ppmpu_of_match_table);
 
 static struct platform_driver exynos_ppmpu_driver = {
 	.probe = exynos_ppmpu_probe,

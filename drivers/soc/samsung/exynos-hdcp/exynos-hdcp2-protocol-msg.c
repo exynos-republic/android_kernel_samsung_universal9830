@@ -1068,5 +1068,3 @@ int decap_protocol_msg(uint8_t msg_id,
 	else
 		return -1;
 }
-
-MODULE_LICENSE("GPL");

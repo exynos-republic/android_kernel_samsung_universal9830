@@ -23,18 +23,17 @@
 #include <linux/export.h>
 #include <linux/pm_qos.h>
 #include <linux/dma-contiguous.h>
-#include <linux/ion.h>
+#include <linux/ion_exynos.h>
+#include <linux/smc.h>
 #include <linux/dma-buf.h>
-#include <linux/of_reserved_mem.h>
-#include <soc/samsung/exynos-smc.h>
-
 #include <asm/memory.h>
 #include <asm/cacheflush.h>
-
 #include <soc/samsung/secmem.h>
+#if defined(CONFIG_EXYNOS_DP_POWER_CONTROL)
 #include <linux/platform_device.h>
 #include <linux/of_platform.h>
 #include <linux/device.h>
+#endif
 
 #define SECMEM_DEV_NAME	"s5p-smem"
 
@@ -42,21 +41,17 @@
 #define DRM_PROT_VER_CHUNK_BASED_PROT	0
 #define DRM_PROT_VER_BUFFER_BASED_PROT	1
 
-#define SMC_CM_SET_DRM_MEM_INFO	(0x82001021)
-#define MAX_DRM_MEM_INFO_NUM	16
-#define CUR_DRM_MEM_INFO_NUM	2
-
 struct miscdevice secmem;
 struct secmem_crypto_driver_ftn *crypto_driver;
 
 uint32_t instance_count;
 #if defined(CONFIG_EXYNOS_DP_POWER_CONTROL)
-#define DP_POWER_OFF   0
-#define DP_POWER_ON    1
+#define DP_POWER_OFF	0
+#define DP_POWER_ON	1
 
+struct device *secmem_dev = NULL;
 static int ref_count_pm = 0;
 #endif
-struct device *secmem_dev = NULL;
 
 #if defined(CONFIG_SOC_EXYNOS5433)
 static uint32_t secmem_regions[] = {
@@ -106,11 +101,6 @@ struct secmem_info {
 struct protect_info {
 	uint32_t dev;
 	uint32_t enable;
-};
-
-struct addr_info_t {
-	uint64_t addr;
-	uint64_t size;
 };
 
 #define SECMEM_IS_PAGE_ALIGNED(addr) (!((addr) & (~PAGE_MASK)))
@@ -166,6 +156,7 @@ static int secmem_release(struct inode *inode, struct file *file)
 			if (ret < 0)
 				pr_err("fail to lock/unlock drm status. lock = %d\n", false);
 		}
+
 #if defined(CONFIG_EXYNOS_DP_POWER_CONTROL)
 		if (ref_count_pm > 0) {
 			int i;
@@ -205,7 +196,7 @@ static long secmem_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			return -ENOMEM;
 		}
 
-		attachment = dma_buf_attach(dmabuf, secmem_dev);
+		attachment = dma_buf_attach(dmabuf, info->dev);
 		if (!attachment) {
 			pr_err("smem ioctl error(%d)\n", __LINE__);
 			dma_buf_put(dmabuf);
@@ -340,70 +331,28 @@ static long secmem_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	return 0;
 }
 
+#if defined(CONFIG_EXYNOS_DP_POWER_CONTROL)
 static int exynos_secmem_probe(struct platform_device *pdev)
 {
-	struct reserved_mem *rmem;
-	struct device_node *rmem_np;
-	struct addr_info_t *info_ctx;
-	uint32_t idx = 0;
-	unsigned long smc_ret;
-
 	secmem_dev = &(pdev->dev);
-
-	arch_setup_dma_ops(&pdev->dev, 0x0ULL, 1ULL << 36, NULL, false);
-	pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
-	dma_set_mask(&pdev->dev, DMA_BIT_MASK(36));
-
-#if defined(CONFIG_EXYNOS_DP_POWER_CONTROL)
 	pm_runtime_set_active(secmem_dev);
 	pm_runtime_enable(secmem_dev);
-#endif
 
-	info_ctx = kmalloc(sizeof(struct addr_info_t) * MAX_DRM_MEM_INFO_NUM,
-		GFP_KERNEL);
-	if (!info_ctx)
-		goto out;
-
-	for (idx = 0; idx < CUR_DRM_MEM_INFO_NUM; idx++) {
-		rmem_np = of_parse_phandle(pdev->dev.of_node, "memory-region", idx);
-		rmem = of_reserved_mem_lookup(rmem_np);
-		if (!rmem) {
-			pr_err("%s: Not found memory-region handle for %d\n",
-				pdev->name, idx);
-			break;
-		}
-
-		info_ctx[idx].addr = rmem->base;
-		info_ctx[idx].size = rmem->size;
-	}
-
-	if (idx == CUR_DRM_MEM_INFO_NUM) {
-		/* cache flush */
-		dma_map_single(secmem_dev, (void *)info_ctx,
-			sizeof(struct addr_info_t) * MAX_DRM_MEM_INFO_NUM, DMA_TO_DEVICE);
-		smc_ret = exynos_smc(SMC_CM_SET_DRM_MEM_INFO,
-			virt_to_phys(info_ctx), idx, 0);
-		if (smc_ret)
-			pr_err("%s: exynos_smc ret %lu\n", pdev->name, smc_ret);
-	}
-	kfree(info_ctx);
-
-out:
 	return 0;
 }
 
 static int exynos_secmem_remove(struct platform_device *pdev)
 {
 	secmem_dev = &(pdev->dev);
-#if defined(CONFIG_EXYNOS_DP_POWER_CONTROL)
 	pm_runtime_disable(secmem_dev);
 
 	if (!pm_runtime_status_suspended(secmem_dev)) {
 		pm_runtime_set_suspended(secmem_dev);
 	}
-#endif
+
 	return 0;
 }
+#endif
 
 #if 0
 void secmem_crypto_register(struct secmem_crypto_driver_ftn *ftn)
@@ -419,9 +368,10 @@ void secmem_crypto_deregister(void)
 EXPORT_SYMBOL(secmem_crypto_deregister);
 #endif
 
+#if defined(CONFIG_EXYNOS_DP_POWER_CONTROL)
 static const struct of_device_id exynos_secmem_of_match_table[] = {
-	{ .compatible = "samsung,exynos-secmem", },
-	{ },
+        { .compatible = "samsung,exynos-secmem", },
+        { },
 };
 
 static struct platform_driver exynos_secmem_driver = {
@@ -433,6 +383,7 @@ static struct platform_driver exynos_secmem_driver = {
 		.of_match_table = of_match_ptr(exynos_secmem_of_match_table),
 	}
 };
+#endif
 
 static const struct file_operations secmem_fops = {
 	.owner		= THIS_MODULE,
@@ -461,20 +412,19 @@ static int __init secmem_init(void)
 
 	crypto_driver = NULL;
 
+#if defined(CONFIG_EXYNOS_DP_POWER_CONTROL)
 	platform_driver_register(&exynos_secmem_driver);
-
+#endif
 	return 0;
 }
 
 static void __exit secmem_exit(void)
 {
 	misc_deregister(&secmem);
+#if defined(CONFIG_EXYNOS_DP_POWER_CONTROL)
 	platform_driver_unregister(&exynos_secmem_driver);
+#endif
 }
 
 module_init(secmem_init);
 module_exit(secmem_exit);
-
-MODULE_DESCRIPTION("Exynos Secure memory support driver");
-MODULE_AUTHOR("<jt1217.kim@samsung.com>");
-MODULE_LICENSE("GPL");

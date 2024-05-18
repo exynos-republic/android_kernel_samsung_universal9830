@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2011 Samsung Electronics.
  *
@@ -22,12 +21,15 @@
 #include <linux/delay.h>
 #include <linux/wait.h>
 #include <linux/sched.h>
+#include <linux/wakelock.h>
 #include <linux/vmalloc.h>
 #include <linux/netdevice.h>
 
 #include "modem_prj.h"
 #include "modem_utils.h"
 #include "link_device_memory.h"
+
+#ifdef GROUP_MEM_LINK_DEBUG
 
 void print_req_ack(struct mem_link_device *mld, struct mem_snapshot *mst,
 		   struct legacy_ipc_device *dev, enum direction dir)
@@ -100,3 +102,5 @@ void print_dev_snapshot(struct mem_link_device *mld, struct mem_snapshot *mst,
 		(mst->dir == RX) ? mst->int2ap : mst->int2cp);
 #endif
 }
+
+#endif

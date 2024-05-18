@@ -16,9 +16,7 @@
 #include <linux/errno.h>
 #include <linux/of.h>
 #include <linux/slab.h>
-#include <soc/samsung/debug-snapshot.h>
-#include <linux/sched/clock.h>
-#include <soc/samsung/exynos-cpupm.h>
+#include <linux/debug-snapshot.h>
 #include "acpm/acpm.h"
 #include "acpm/acpm_ipc.h"
 
@@ -27,7 +25,6 @@
 #define DM_EMPTY	0xFF
 static struct exynos_dm_device *exynos_dm;
 void exynos_dm_dynamic_disable(int flag);
-static int dm_idle_ip_index;
 
 /*
  * SYSFS for Debugging
@@ -362,7 +359,7 @@ static int exynos_dm_parse_dt(struct device_node *np, struct exynos_dm_device *d
 	for_each_child_of_node(domain_np, child_np) {
 		int index;
 		const char *available;
-#if defined(CONFIG_EXYNOS_ACPM) || defined(CONFIG_EXYNOS_ACPM_MODULE)
+#ifdef CONFIG_EXYNOS_ACPM
 		const char *policy_use;
 #endif
 		if (of_property_read_u32(child_np, "dm-index", &index))
@@ -389,7 +386,7 @@ static int exynos_dm_parse_dt(struct device_node *np, struct exynos_dm_device *d
 		} else {
 			dm->dm_data[index].available = false;
 		}
-#if defined(CONFIG_EXYNOS_ACPM) || defined(CONFIG_EXYNOS_ACPM_MODULE)
+#ifdef CONFIG_EXYNOS_ACPM
 		if (of_property_read_string(child_np, "policy_use", &policy_use)) {
 			dev_info(dm->dev, "This doesn't need to send policy to ACPM\n");
 		} else {
@@ -448,7 +445,6 @@ out:
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(exynos_dm_data_init);
 
 /*
  * 	Initialize sequence Step.2
@@ -620,7 +616,6 @@ err_sub_const:
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(register_exynos_dm_constraint_table);
 
 int unregister_exynos_dm_constraint_table(int dm_type,
 				struct exynos_dm_constraint *constraint)
@@ -654,7 +649,6 @@ int unregister_exynos_dm_constraint_table(int dm_type,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(unregister_exynos_dm_constraint_table);
 
 /*
  * This function should be called from each DVFS driver registration function
@@ -692,7 +686,6 @@ out:
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(register_exynos_dm_freq_scaler);
 
 int unregister_exynos_dm_freq_scaler(int dm_type)
 {
@@ -719,7 +712,6 @@ out:
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(unregister_exynos_dm_freq_scaler);
 
 /*
  * Policy Updater
@@ -795,8 +787,8 @@ static int update_constraint_max(struct exynos_dm_constraint *constraint, u32 ma
 int policy_update_call_to_DM(int dm_type, u32 min_freq, u32 max_freq)
 {
 	struct exynos_dm_data *dm;
-	u64 pre, before, after;
-#if defined(CONFIG_EXYNOS_ACPM) || defined(CONFIG_EXYNOS_ACPM_MODULE)
+	struct timeval pre, before, after;
+#ifdef CONFIG_EXYNOS_ACPM
 	struct ipc_config config;
 	unsigned int cmd[4];
 	int size, ch_num;
@@ -806,13 +798,12 @@ int policy_update_call_to_DM(int dm_type, u32 min_freq, u32 max_freq)
 	u32 prev_min, prev_max, new_min, new_max;
 	int ret = 0, i;
 	struct exynos_dm_constraint *t;
-	bool update_max_policy = false;
 
 	dbg_snapshot_dm((int)dm_type, min_freq, max_freq, pre_time, time);
 
-	pre = sched_clock();
+	do_gettimeofday(&pre);
 	mutex_lock(&exynos_dm->lock);
-	before = sched_clock();
+	do_gettimeofday(&before);
 
 	dm = &exynos_dm->dm_data[dm_type];
 
@@ -834,14 +825,12 @@ int policy_update_call_to_DM(int dm_type, u32 min_freq, u32 max_freq)
 	if (min_freq == 0)
 		min_freq = dm->policy_min;
 
-	if (dm->policy_max != max_freq)
-		update_max_policy = true;
 	dm->policy_max = max_freq;
 	dm->policy_min = min_freq;
 
 	/*Send policy to FVP*/
-#if defined(CONFIG_EXYNOS_ACPM) || defined(CONFIG_EXYNOS_ACPM_MODULE)
-	if (dm->policy_use && update_max_policy) {
+#ifdef CONFIG_EXYNOS_ACPM
+	if (dm->policy_use) {
 		ret = acpm_ipc_request_channel(exynos_dm->dev->of_node, NULL, &ch_num, &size);
 		if (ret) {
 			dev_err(exynos_dm->dev,
@@ -896,19 +885,20 @@ int policy_update_call_to_DM(int dm_type, u32 min_freq, u32 max_freq)
 		}
 	}
 out:
-	after = sched_clock();
+	do_gettimeofday(&after);
 	mutex_unlock(&exynos_dm->lock);
 
-	pre_time = (unsigned int)(before - pre);
-	time = (unsigned int)(after - before);
+	pre_time = (before.tv_sec - pre.tv_sec) * USEC_PER_SEC +
+		(before.tv_usec - pre.tv_usec);
+	time = (after.tv_sec - before.tv_sec) * USEC_PER_SEC +
+		(after.tv_usec - before.tv_usec);
 
 	dbg_snapshot_dm((int)dm_type, min_freq, max_freq, pre_time, time);
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(policy_update_call_to_DM);
 
-static void update_new_target(int dm_type)
+void update_new_target(int dm_type)
 {
 	u32 min_freq, max_freq;
 	struct exynos_dm_data *dm = &exynos_dm->dm_data[dm_type];
@@ -965,16 +955,14 @@ int DM_CALL(int dm_type, unsigned long *target_freq)
 	u32 max_freq, min_freq;
 	int i, ret = 0;
 	unsigned int relation = EXYNOS_DM_RELATION_L;
-	u64 pre, before, after;
+	struct timeval pre, before, after;
 	s32 time = 0, pre_time = 0;
 
 	dbg_snapshot_dm((int)dm_type, *target_freq, 1, pre_time, time);
 
-	pre = sched_clock();
+	do_gettimeofday(&pre);
 	mutex_lock(&exynos_dm->lock);
-	before = sched_clock();
-
-	exynos_update_ip_idle_status(dm_idle_ip_index, 0);
+	do_gettimeofday(&before);
 
 	target_dm = &exynos_dm->dm_data[dm_type];
 
@@ -1018,8 +1006,10 @@ int DM_CALL(int dm_type, unsigned long *target_freq)
 		// Perform frequency down scaling
 		if (dm->cur_freq > dm->next_target_freq && dm->freq_scaler) {
 			ret = dm->freq_scaler(dm->dm_type, dm->devdata, dm->next_target_freq, relation);
-			if (!ret)
-				dm->cur_freq = dm->next_target_freq;
+			if (ret)
+				goto out;
+
+			dm->cur_freq = dm->next_target_freq;
 		}
 	}
 
@@ -1028,28 +1018,29 @@ int DM_CALL(int dm_type, unsigned long *target_freq)
 		dm = &exynos_dm->dm_data[exynos_dm->domain_order[i]];
 		if (dm->cur_freq < dm->next_target_freq && dm->freq_scaler) {
 			ret = dm->freq_scaler(dm->dm_type, dm->devdata, dm->next_target_freq, relation);
-			if (!ret)
-				dm->cur_freq = dm->next_target_freq;
+			if (ret)
+				goto out;
+
+			dm->cur_freq = dm->next_target_freq;
 		}
 
 	}
 
 out:
-	after = sched_clock();
-	exynos_update_ip_idle_status(dm_idle_ip_index, 1);
-
+	do_gettimeofday(&after);
 	mutex_unlock(&exynos_dm->lock);
 
-	pre_time = (unsigned int)(before - pre);
-	time = (unsigned int)(after - before);
+	pre_time = (before.tv_sec - pre.tv_sec) * USEC_PER_SEC +
+		(before.tv_usec - pre.tv_usec);
+	time = (after.tv_sec - before.tv_sec) * USEC_PER_SEC +
+		(after.tv_usec - before.tv_usec);
 
 	*target_freq = target_dm->cur_freq;
 
-	dbg_snapshot_dm((int)dm_type, *target_freq, 3, pre_time, time);
+	dbg_snapshot_dm((int)dm_type, *target_freq, (ret ? ret : 3), pre_time, time);
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(DM_CALL);
 
 static int exynos_dm_suspend(struct device *dev)
 {
@@ -1126,10 +1117,6 @@ static int exynos_dm_probe(struct platform_device *pdev)
 	}
 
 	exynos_dm = dm;
-
-	dm_idle_ip_index = exynos_get_idle_ip_index(EXYNOS_DM_MODULE_NAME, 0);
-	exynos_update_ip_idle_status(dm_idle_ip_index, 1);
-
 	platform_set_drvdata(pdev, dm);
 
 	return 0;
@@ -1186,7 +1173,7 @@ static struct platform_driver exynos_dm_driver = {
 	},
 };
 
-static int exynos_dm_init(void)
+static int __init exynos_dm_init(void)
 {
 	return platform_driver_register(&exynos_dm_driver);
 }

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2010 Samsung Electronics.
  *
@@ -29,12 +28,12 @@
 #define DECLARE_LINK_INIT()						\
 	struct link_device *create_link_device(		\
 				struct platform_device *pdev,		\
-				u32 link_type)
+				enum modem_link link_type)
 
 #define DECLARE_LINK_INIT_DUMMY()					\
 	struct link_device *dummy_create_link_device(		\
 				struct platform_device *pdev,		\
-				u32 link_type) { return NULL; }
+				enum modem_link link_type) { return NULL; }
 
 #define MODEM_INIT_CALL(type)	type ## _init_modemctl_device
 
@@ -48,26 +47,26 @@
  */
 
 /* modem device support */
-#if IS_ENABLED(CONFIG_SEC_MODEM_S5000AP)
+#ifdef CONFIG_SEC_MODEM_S5000AP
 DECLARE_MODEM_INIT(s5000ap);
 #endif
 
-#if IS_ENABLED(CONFIG_SEC_MODEM_S5100)
+#ifdef CONFIG_SEC_MODEM_S5100
 DECLARE_MODEM_INIT(s5100);
 #endif
 
 /* link device support */
-#if IS_ENABLED(CONFIG_LINK_DEVICE_SHMEM) || IS_ENABLED(CONFIG_LINK_DEVICE_PCIE)
+#if defined(CONFIG_LINK_DEVICE_SHMEM) || defined(CONFIG_LINK_DEVICE_PCIE)
 DECLARE_LINK_INIT();
 #endif
 
 typedef int (*modem_init_call)(struct modem_ctl *, struct modem_data *);
 typedef struct link_device *(*link_init_call)(struct platform_device *,
-						u32 link_type);
+						enum modem_link link_type);
 
 int call_modem_init_func(struct modem_ctl *mc, struct modem_data *pdata);
 
 struct link_device *call_link_init_func(struct platform_device *pdev,
-					       u32 link_type);
+					       enum modem_link link_type);
 
 #endif

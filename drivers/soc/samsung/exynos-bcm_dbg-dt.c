@@ -98,7 +98,7 @@ static void print_bcm_dbg_data(struct exynos_bcm_dbg_data *data)
 }
 
 #ifdef CONFIG_OF
-#if !(defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE))
+#ifndef CONFIG_EXYNOS_BCM_DBG_GNR
 static int exynos_bcm_ipc_node_parse_dt(struct device_node *np,
 				struct exynos_bcm_dbg_data *data)
 {
@@ -162,12 +162,6 @@ static int exynos_bcm_init_run_ip_parse_dt(struct device_node *np,
 	ret = of_property_read_u32(np, "bcm_ip_nr", &data->bcm_ip_nr);
 	if (ret) {
 		BCM_ERR("%s: Failed get bcm_ip_nr\n", __func__);
-		return ret;
-	}
-
-	ret = of_property_read_u32(np, "bcm_ip_print_nr", &data->bcm_ip_print_nr);
-	if (ret) {
-		BCM_ERR("%s: Failed get bcm_ip_print_nr\n", __func__);
 		return ret;
 	}
 
@@ -745,7 +739,7 @@ static int exynos_bcm_calc_info_parse_dt(struct device_node *np,
 
 	/* bcm calc ip name */
 	data->bcm_calc->ip_name =
-		kzalloc(sizeof(char *) * data->bcm_calc->num_ip, GFP_KERNEL);
+		kzalloc(sizeof(unsigned int) * data->bcm_calc->num_ip, GFP_KERNEL);
 
 	if (data->bcm_calc->ip_name == NULL) {
 		BCM_ERR("%s: failed to allocate bcm_calc_ip_name\n", __func__);
@@ -803,7 +797,7 @@ int exynos_bcm_dbg_parse_dt(struct device_node *np,
 
 	if (!np)
 		return -ENODEV;
-#if !(defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE))
+#ifndef CONFIG_EXYNOS_BCM_DBG_GNR
 	/* get IPC type */
 	ret = exynos_bcm_ipc_node_parse_dt(np, data);
 	if (ret) {
@@ -872,7 +866,6 @@ int exynos_bcm_dbg_parse_dt(struct device_node *np,
 
 	return ret;
 }
-EXPORT_SYMBOL(exynos_bcm_dbg_parse_dt);
 #else
 int exynos_bcm_dbg_parse_dt(struct device_node *np,
 				struct exynos_bcm_dbg_data *data)
@@ -880,5 +873,3 @@ int exynos_bcm_dbg_parse_dt(struct device_node *np,
 	return -ENODEV;
 }
 #endif
-
-MODULE_LICENSE("GPL");

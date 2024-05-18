@@ -23,21 +23,18 @@
 #include <linux/uaccess.h>
 #include <linux/ctype.h>
 #include <linux/nmi.h>
+#include <linux/workqueue.h>
 #include <linux/spinlock.h>
-#include <linux/platform_device.h>
+#include <linux/debug-snapshot.h>
+#include <linux/debug-snapshot-helper.h>
 #include <asm-generic/io.h>
-
-#include <soc/samsung/debug-snapshot.h>
-#include <soc/samsung/exynos-pmu-if.h>
+#include <asm/cacheflush.h>
+#include <soc/samsung/exynos-pmu.h>
+#include <soc/samsung/exynos-debug.h>
 #include <soc/samsung/acpm_ipc_ctrl.h>
 
-#include "debug-snapshot-local.h"
-
-#define	REBOOT_REASON_WTSR		(1 << 0)
-#define	REBOOT_REASON_SMPL		(1 << 1)
-#define	REBOOT_REASON_WDT		(1 << 2)
-#define REBOOT_REASON_PANIC		(1 << 3)
-#define REBOOT_REASON_NA		(0)
+#define EXYNOS_DEBUG_TEST_END	(0xCAFEDB9)
+#define ALL_FORCE_ERRORS	31
 
 typedef void (*force_error_func)(char *arg);
 
@@ -58,7 +55,9 @@ static void simulate_DFREE(char *arg);
 static void simulate_DREF(char *arg);
 static void simulate_MCRPT(char *arg);
 static void simulate_LOMEM(char *arg);
+static void simulate_SOFT_LOCKUP(char *arg);
 static void simulate_HARD_LOCKUP(char *arg);
+static void simulate_BAD_SCHED(char *arg);
 static void simulate_SPIN_LOCKUP(char *arg);
 static void simulate_PC_ABORT(char *arg);
 static void simulate_SP_ABORT(char *arg);
@@ -68,9 +67,53 @@ static void simulate_UNALIGNED(char *arg);
 static void simulate_WRITE_RO(char *arg);
 static void simulate_OVERFLOW(char *arg);
 static void simulate_CACHE_FLUSH(char *arg);
+static void simulate_test_start(char *arg);
 static void simulate_APM_WDT(char *arg);
 
-static int exynos_debug_test_parsing_dt(struct device_node *np);
+static int exynos_debug_test_desc_init(struct device_node *np);
+
+enum {
+	FORCE_KERNEL_PANIC = 0,		/* KP */
+	FORCE_WATCHDOG,			/* DP */
+	FORCE_QUICKWATCHDOG,		/* QDP */
+	FORCE_SVC,			/* SVC */
+	FORCE_SFR,			/* SFR */
+	FORCE_WARM_RESET,		/* WP */
+	FORCE_HW_TRIPPING,		/* TP */
+	FORCE_PANIC,			/* PANIC */
+	FORCE_BUG,			/* BUG */
+	FORCE_WARN,			/* WARN */
+	FORCE_DATA_ABORT,		/* DABRT */
+	FORCE_PREFETCH_ABORT,		/* PABRT */
+	FORCE_UNDEFINED_INSTRUCTION,	/* UNDEF */
+	FORCE_DOUBLE_FREE,		/* DFREE */
+	FORCE_DANGLING_REFERENCE,	/* DREF */
+	FORCE_MEMORY_CORRUPTION,	/* MCRPT */
+	FORCE_LOW_MEMEMORY,		/* LOMEM */
+	FORCE_SOFT_LOCKUP,		/* SOFT LOCKUP */
+	FORCE_HARD_LOCKUP,		/* HARD LOCKUP */
+	FORCE_SPIN_LOCKUP,		/* SPIN LOCKUP */
+	FORCE_PC_ABORT,			/* PC ABORT */
+	FORCE_SP_ABORT,			/* SP ABORT */
+	FORCE_JUMP_ZERO,		/* JUMP TO ZERO */
+	FORCE_BUSMON_ERROR,		/* BUSMON ERROR */
+	FORCE_UNALIGNED,		/* UNALIGNED WRITE */
+	FORCE_WRITE_RO,			/* WRITE RODATA */
+	FORCE_OVERFLOW,			/* STACK OVERFLOW */
+	FORCE_BAD_SCHEDULING,		/* BAD SCHED */
+	FORCE_CACHE_FLUSH,		/* CACHE FLUSH */
+	FORCE_TEST_START,		/* START TEST */
+	FPRCE_APM_WDT,
+	NR_FORCE_ERROR,
+};
+
+enum {
+	REBOOT_REASON_WTSR = 0x1,
+	REBOOT_REASON_SMPL,
+	REBOOT_REASON_WDT,
+	REBOOT_REASON_PANIC,
+	REBOOT_REASON_NA,
+};
 
 struct debug_test_desc {
 	int enabled;
@@ -85,9 +128,11 @@ struct debug_test_desc {
 	unsigned int *null_pointer_ui;
 	int *null_pointer_si;
 	void (*null_function)(void);
-	struct dentry *debugfs_root;
+	struct dentry *exynos_debug_test_debugfs_root;
+	struct device_node *np;
 	struct device *dev;
 	spinlock_t debug_test_lock;
+	struct delayed_work test_work;
 };
 
 struct force_error_item {
@@ -95,51 +140,61 @@ struct force_error_item {
 	force_error_func errfunc;
 };
 
-/* For printing test information */
 struct force_error_test_item {
 	char arg[SZ_128];
-	int auto_reset;
+	int enabled;
 	int reason;
+};
+
+struct force_error {
+	struct force_error_item item[NR_FORCE_ERROR];
 };
 
 static struct debug_test_desc exynos_debug_desc = { 0, };
 
-static struct force_error_item force_error_vector[] = {
-	{"KP",		&simulate_KP},
-	{"DP",		&simulate_DP},
-	{"QDP",		&simulate_QDP},
-	{"SVC",		&simulate_SVC},
-	{"SFR",		&simulate_SFR},
-	{"WP",		&simulate_WP},
-	{"TP",		&simulate_TP},
-	{"panic",	&simulate_PANIC},
-	{"bug",		&simulate_BUG},
-	{"warn",	&simulate_WARN},
-	{"dabrt",	&simulate_DABRT},
-	{"pabrt",	&simulate_PABRT},
-	{"undef",	&simulate_UNDEF},
-	{"dfree",	&simulate_DFREE},
-	{"danglingref",	&simulate_DREF},
-	{"memcorrupt",	&simulate_MCRPT},
-	{"lowmem",	&simulate_LOMEM},
-	{"hardlockup",	&simulate_HARD_LOCKUP},
-	{"spinlockup",	&simulate_SPIN_LOCKUP},
-	{"pcabort",	&simulate_PC_ABORT},
-	{"spabort",	&simulate_SP_ABORT},
-	{"jumpzero",	&simulate_JUMP_ZERO},
-	{"busmon",	&simulate_BUSMON_ERROR},
-	{"unaligned",	&simulate_UNALIGNED},
-	{"writero",	&simulate_WRITE_RO},
-	{"overflow",	&simulate_OVERFLOW},
-	{"cacheflush",	&simulate_CACHE_FLUSH},
-	{"apmwdt",	&simulate_APM_WDT},
+static struct force_error force_error_vector = {
+	.item = {
+		{"KP",		&simulate_KP},
+		{"DP",		&simulate_DP},
+		{"QDP",		&simulate_QDP},
+		{"SVC",		&simulate_SVC},
+		{"SFR",		&simulate_SFR},
+		{"WP",		&simulate_WP},
+		{"TP",		&simulate_TP},
+		{"panic",	&simulate_PANIC},
+		{"bug",		&simulate_BUG},
+		{"warn",	&simulate_WARN},
+		{"dabrt",	&simulate_DABRT},
+		{"pabrt",	&simulate_PABRT},
+		{"undef",	&simulate_UNDEF},
+		{"dfree",	&simulate_DFREE},
+		{"danglingref",	&simulate_DREF},
+		{"memcorrupt",	&simulate_MCRPT},
+		{"lowmem",	&simulate_LOMEM},
+		{"softlockup",	&simulate_SOFT_LOCKUP},
+		{"hardlockup",	&simulate_HARD_LOCKUP},
+		{"spinlockup",	&simulate_SPIN_LOCKUP},
+		{"pcabort",	&simulate_PC_ABORT},
+		{"spabort",	&simulate_SP_ABORT},
+		{"jumpzero",	&simulate_JUMP_ZERO},
+		{"busmon",	&simulate_BUSMON_ERROR},
+		{"unaligned",	&simulate_UNALIGNED},
+		{"writero",	&simulate_WRITE_RO},
+		{"overflow",	&simulate_OVERFLOW},
+		{"badsched",	&simulate_BAD_SCHED},
+		{"cacheflush",	&simulate_CACHE_FLUSH},
+		{"all",		&simulate_test_start},
+		{"apmwdt",	&simulate_APM_WDT},
+	}
 };
+
+static unsigned int test_state;
 
 static struct force_error_test_item test_vector[] = {
 	{"KP",				1, REBOOT_REASON_PANIC},
 	{"SVC",				1, REBOOT_REASON_PANIC},
-	{"SFR 0x1ffffff0",		1, REBOOT_REASON_PANIC | REBOOT_REASON_WDT},
-	{"SFR 0x1ffffff0 0x12345678",	1, REBOOT_REASON_PANIC | REBOOT_REASON_WDT},
+	{"SFR 0x1ffffff0",		1, REBOOT_REASON_PANIC},
+	{"SFR 0x1ffffff0 0x12345678",	1, REBOOT_REASON_PANIC},
 	{"WP",				1, REBOOT_REASON_WTSR},
 	{"panic",			1, REBOOT_REASON_PANIC},
 	{"bug",				1, REBOOT_REASON_PANIC},
@@ -147,8 +202,10 @@ static struct force_error_test_item test_vector[] = {
 	{"pabrt",			1, REBOOT_REASON_PANIC},
 	{"undef",			1, REBOOT_REASON_PANIC},
 	{"memcorrupt",			1, REBOOT_REASON_PANIC},
+	{"softlockup",			1, REBOOT_REASON_PANIC},
 	{"hardlockup 0",		1, REBOOT_REASON_WDT},
 	{"hardlockup LITTLE",		1, REBOOT_REASON_WDT},
+	{"hardlockup MID",		1, REBOOT_REASON_WDT},
 	{"hardlockup BIG",		1, REBOOT_REASON_WDT},
 	{"spinlockup",			1, REBOOT_REASON_PANIC},
 	{"pcabort",			1, REBOOT_REASON_PANIC},
@@ -156,35 +213,178 @@ static struct force_error_test_item test_vector[] = {
 	{"writero",			1, REBOOT_REASON_PANIC},
 	{"danglingref",			0, REBOOT_REASON_PANIC},
 	{"dfree",			0, REBOOT_REASON_PANIC},
+	{"badsched",			0, REBOOT_REASON_PANIC},
 	{"QDP",				0, REBOOT_REASON_WDT},
 	{"spabort",			0, REBOOT_REASON_NA},
 	{"overflow",			0, REBOOT_REASON_NA},
 	{"cacheflush",			1, REBOOT_REASON_WDT},
-	{"apmwdt",			0, REBOOT_REASON_WDT},
 };
+
+static int str_to_num(char *s)
+{
+	int ret = -1;
+
+	if (s) {
+		switch (s[0]) {
+		case '0':
+		case '1':
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+		case '7':
+			ret = s[0] - '0';
+			break;
+		default:
+			ret = -1;
+			break;
+		}
+	}
+	return ret;
+}
+
+static void clear_dbg_snapshot_test_regs(void)
+{
+	dbg_snapshot_set_debug_test_case(0);
+	dbg_snapshot_set_debug_test_next(0);
+	dbg_snapshot_set_debug_test_panic(0);
+	dbg_snapshot_set_debug_test_wdt(0);
+	dbg_snapshot_set_debug_test_wtsr(0);
+	dbg_snapshot_set_debug_test_smpl(0);
+	dbg_snapshot_set_debug_test_curr(0);
+	dbg_snapshot_set_debug_test_total(0);
+	dbg_snapshot_clear_debug_test_runflag();
+	test_state = 0;
+}
 
 static int debug_force_error(const char *val)
 {
 	int i;
 	char *temp;
 	char *ptr;
+	int test_vector_id = -1;
 
-	for (i = 0; i < (int)ARRAY_SIZE(force_error_vector); i++) {
-		if (!strncmp(val, force_error_vector[i].errname,
-				strlen(force_error_vector[i].errname))) {
-			temp = (char *)val;
-			ptr = strsep(&temp, " ");	/* ignore the first token */
-			ptr = strsep(&temp, " ");	/* take the second token */
-			force_error_vector[i].errfunc(ptr);
+	for (i = 0; i < (int)ARRAY_SIZE(test_vector); i++) {
+		if (test_vector[i].enabled &&
+			!strncmp(val, test_vector[i].arg,
+				      max(strlen(val), strlen(test_vector[i].arg)))) {
+			test_vector_id = i;
 			break;
 		}
 	}
 
-	if (i == (int)ARRAY_SIZE(force_error_vector))
-		dev_info(exynos_debug_desc.dev,"%s(): INVALID TEST "
-					"CMD = [%s]\n", __func__, val);
-
+	for (i = 0; i < NR_FORCE_ERROR; i++) {
+		if (!strncmp(val, force_error_vector.item[i].errname,
+			     strlen(force_error_vector.item[i].errname))) {
+			if (test_vector_id >= 0 &&
+				!dbg_snapshot_get_debug_test_run(ALL_FORCE_ERRORS)) {
+				dbg_snapshot_set_debug_test_reg(1);
+				dbg_snapshot_set_debug_test_run(test_vector_id, 1);
+				dbg_snapshot_set_debug_test_case(test_vector_id);
+				dbg_snapshot_set_debug_test_next(test_vector_id + 1);
+				test_state = 1 << test_vector_id;
+			}
+			temp = (char *)val;
+			ptr = strsep(&temp, " ");	/* ignore the first token */
+			ptr = strsep(&temp, " ");	/* take the second token */
+			force_error_vector.item[i].errfunc(ptr);
+		}
+	}
 	return 0;
+}
+
+static void exynos_debug_test_print(unsigned int cnt)
+{
+	int i;
+	int pass;
+
+	if (!cnt)
+		return;
+
+	if (cnt >= ARRAY_SIZE(test_vector)) {
+		dev_info(exynos_debug_desc.dev, "=============== DEBUG TEST RESULT ===============\n");
+		cnt = ARRAY_SIZE(test_vector);
+	} else {
+		dev_info(exynos_debug_desc.dev, "================ DEBUG TEST LOG =================\n");
+	}
+
+	for (i = 0; i < cnt; i++) {
+		if (!test_vector[i].enabled) {
+			dev_info(exynos_debug_desc.dev, "TestCase%3d: [%30s] disabled\n", i,
+							test_vector[i].arg);
+			continue;
+		}
+		switch (test_vector[i].reason) {
+		case REBOOT_REASON_WTSR:
+			if ((1 << i) & dbg_snapshot_get_debug_test_wtsr())
+				pass = 1;
+			else
+				pass = 0;
+			break;
+		case REBOOT_REASON_SMPL:
+			if ((1 << i) & dbg_snapshot_get_debug_test_smpl())
+				pass = 1;
+			else
+				pass = 0;
+			break;
+		case REBOOT_REASON_WDT:
+			if ((1 << i) & dbg_snapshot_get_debug_test_wdt())
+				pass = 1;
+			else
+				pass = 0;
+			break;
+		case REBOOT_REASON_PANIC:
+			if ((1 << i) & dbg_snapshot_get_debug_test_panic())
+				pass = 1;
+			else
+				pass = 0;
+			break;
+		default:
+			pass = 0;
+			break;
+		}
+
+		dev_info(exynos_debug_desc.dev, "TestCase%3d: [%30s] result: [%s]\n",
+				i, test_vector[i].arg, pass ? "PASS" : "FAIL");
+	}
+	dev_info(exynos_debug_desc.dev, "reg info: panic[0x%x] wdt[0x%x] wtsr[0x%x] smpl[0x%x]\n",
+						dbg_snapshot_get_debug_test_panic(),
+						dbg_snapshot_get_debug_test_wdt(),
+						dbg_snapshot_get_debug_test_wtsr(),
+						dbg_snapshot_get_debug_test_smpl());
+	dev_info(exynos_debug_desc.dev, "=================================================\n");
+}
+
+static void exynos_debug_test_run_test(struct work_struct *work)
+{
+	int i = dbg_snapshot_get_debug_test_next();
+
+	/* find test and do test */
+	for (; i < (int)ARRAY_SIZE(test_vector); i++) {
+		if (test_vector[i].enabled) {
+			char *temp;
+
+			temp = kmalloc(SZ_128, GFP_KERNEL);
+			if (!temp)
+				return;
+			exynos_debug_test_print(i);
+			dbg_snapshot_set_debug_test_next(i + 1);
+			dbg_snapshot_set_debug_test_case(i);
+			dbg_snapshot_set_debug_test_run(i, 1);
+			test_state = 1 << i;
+			dev_info(exynos_debug_desc.dev, "test case%d\t:\t%s\n", i, test_vector[i].arg);
+			memcpy(temp, test_vector[i].arg, SZ_128);
+			debug_force_error(temp);
+			kfree(temp);
+			return;
+		}
+	}
+
+	/* end of test */
+	exynos_debug_test_print(i);
+	dbg_snapshot_set_debug_test_reg(0);
+	dbg_snapshot_set_debug_test_case(EXYNOS_DEBUG_TEST_END);
 }
 
 /* timeout for dog bark/bite */
@@ -192,7 +392,7 @@ static int debug_force_error(const char *val)
 
 static void pull_down_other_cpus(void)
 {
-#if IS_ENABLED(CONFIG_HOTPLUG_CPU)
+#ifdef CONFIG_HOTPLUG_CPU
 	int cpu, ret;
 
 	for (cpu = exynos_debug_desc.nr_cpu - 1; cpu > 0 ; cpu--) {
@@ -217,6 +417,25 @@ static int find_blank(char *arg)
 	return i;
 }
 
+static void simulate_test_start(char *arg)
+{
+	int i;
+	int test_cnt;
+
+	test_cnt = ARRAY_SIZE(test_vector);
+	for (i = 0; i < (int)ARRAY_SIZE(test_vector); i++) {
+		if (!test_vector[i].enabled)
+			test_cnt--;
+	}
+
+	dev_info(exynos_debug_desc.dev, "TEST START!(total test case = %d)\n", test_cnt);
+	clear_dbg_snapshot_test_regs();
+	dbg_snapshot_set_debug_test_reg(1);
+	dbg_snapshot_set_debug_test_total(test_cnt);
+	dbg_snapshot_set_debug_test_run(ALL_FORCE_ERRORS, 1);
+	exynos_debug_test_run_test(&exynos_debug_desc.test_work.work);
+}
+
 static void simulate_KP(char *arg)
 {
 	dev_crit(exynos_debug_desc.dev, "%s()\n", __func__);
@@ -231,7 +450,7 @@ static void simulate_DP(char *arg)
 	pull_down_other_cpus();
 	dev_crit(exynos_debug_desc.dev, "%s() start to hanging\n", __func__);
 	local_irq_disable();
-	mdelay(DELAY_TIME);
+	dev_mdelay(DELAY_TIME);
 	local_irq_enable();
 	/* should not reach here */
 }
@@ -240,8 +459,8 @@ static void simulate_QDP(char *arg)
 {
 	dev_crit(exynos_debug_desc.dev, "%s()\n", __func__);
 
-	dbg_snapshot_expire_watchdog();
-	mdelay(DELAY_TIME);
+	s3c2410wdt_set_emergency_reset(10, 0);
+	dev_mdelay(DELAY_TIME);
 	/* should not reach here */
 }
 
@@ -418,6 +637,20 @@ static void simulate_LOMEM(char *arg)
 	dev_crit(exynos_debug_desc.dev, "Allocated %d KB!\n", i * 128);
 }
 
+static void simulate_SOFT_LOCKUP(char *arg)
+{
+	dev_crit(exynos_debug_desc.dev, "%s()\n", __func__);
+
+#ifdef CONFIG_SOFTLOCKUP_DETECTOR
+	softlockup_panic = 1;
+#endif
+	local_irq_disable();
+	preempt_disable();
+	local_irq_enable();
+	asm("b .");
+	preempt_enable();
+}
+
 static void simulate_HARD_LOCKUP_handler(void *info)
 {
 	asm("b .");
@@ -429,7 +662,6 @@ static void simulate_HARD_LOCKUP(char *arg)
 	int start = -1;
 	int end;
 	int curr_cpu;
-	long temp;
 
 	dev_crit(exynos_debug_desc.dev, "%s()\n", __func__);
 
@@ -462,7 +694,7 @@ static void simulate_HARD_LOCKUP(char *arg)
 
 		if (start >= 0) {
 			preempt_disable();
-			curr_cpu = raw_smp_processor_id();
+			curr_cpu = smp_processor_id();
 			for (cpu = start; cpu <= end; cpu++) {
 				if (cpu == curr_cpu)
 					continue;
@@ -477,13 +709,8 @@ static void simulate_HARD_LOCKUP(char *arg)
 			return;
 		}
 
-		if (kstrtol(arg, 10, &temp)) {
-			dev_err(exynos_debug_desc.dev, "%s() input is invalid\n", __func__);
-			return;
-		}
-
-		cpu = (int)temp;
-		if (cpu < 0 || cpu >= exynos_debug_desc.nr_cpu) {
+		cpu = str_to_num(arg);
+		if (cpu == -1) {
 			dev_info(exynos_debug_desc.dev, "%s() input is invalid\n", __func__);
 			return;
 		}
@@ -493,7 +720,7 @@ static void simulate_HARD_LOCKUP(char *arg)
 		end = exynos_debug_desc.nr_cpu;
 
 		local_irq_disable();
-		curr_cpu = raw_smp_processor_id();
+		curr_cpu = smp_processor_id();
 
 		for (cpu = start; cpu < end; cpu++) {
 			if (cpu == curr_cpu)
@@ -565,8 +792,14 @@ static void simulate_WRITE_RO(char *arg)
 
 	dev_crit(exynos_debug_desc.dev, "%s()\n", __func__);
 
-	ptr = (unsigned long *)simulate_WRITE_RO;
+// Write to function addr will triger a warning by JOPP compiler
+#ifdef CONFIG_RKP_CFP_JOPP
+	ptr = (unsigned long *)__start_rodata;
 	*ptr ^= 0x12345678;
+#else
+	ptr = (unsigned long *)simulate_WRITE_RO;
+#endif
+	*ptr ^= 0x0;
 }
 
 #define BUFFER_SIZE SZ_1K
@@ -592,6 +825,36 @@ static void simulate_OVERFLOW(char *arg)
 	recursive_loop(600);
 }
 
+static void simulate_BAD_SCHED_handler(void *info)
+{
+	if (idle_cpu(smp_processor_id())) {
+		*(int *)info = 1;
+		msleep(1000);
+	}
+}
+
+static void simulate_BAD_SCHED(char *arg)
+{
+	int cpu;
+	int ret = 0;
+	int tries = 0;
+
+	dev_crit(exynos_debug_desc.dev, "%s()\n", __func__);
+
+	while (true) {
+		tries++;
+		dev_crit(exynos_debug_desc.dev, "%dth try.\n", tries);
+		for_each_online_cpu(cpu) {
+			if (idle_cpu(cpu))
+				smp_call_function_single(cpu,
+					simulate_BAD_SCHED_handler, &ret, 1);
+			if (ret)
+				return;	/* success */
+		}
+		dev_mdelay(100);
+	}
+}
+
 static char *buffer[NR_CPUS];
 static void simulate_CACHE_FLUSH_handler(void *info)
 {
@@ -605,7 +868,7 @@ static void simulate_CACHE_FLUSH_handler(void *info)
 
 static void simulate_CACHE_FLUSH_ALL(void *info)
 {
-	cache_flush_all();
+	flush_cache_all();
 }
 
 static void simulate_CACHE_FLUSH(char *arg)
@@ -622,10 +885,10 @@ static void simulate_CACHE_FLUSH(char *arg)
 	}
 
 	smp_call_function(simulate_CACHE_FLUSH_ALL, NULL, 1);
-	cache_flush_all();
+	flush_cache_all();
 
 	smp_call_function(simulate_CACHE_FLUSH_handler, NULL, 0);
-	for_each_possible_cpu(cpu) {
+	for (cpu = 0; cpu < NR_CPUS; cpu++) {
 		if (cpu == raw_smp_processor_id())
 			continue;
 
@@ -637,7 +900,7 @@ static void simulate_CACHE_FLUSH(char *arg)
 	addr = virt_to_phys((void *)(buffer[cpu]));
 	memset(buffer[cpu], 0x5A, PAGE_SIZE * 2);
 	dbg_snapshot_set_debug_test_buffer_addr(addr, cpu);
-	dbg_snapshot_expire_watchdog();
+	s3c2410wdt_set_emergency_reset(10, 0);
 }
 
 static void simulate_APM_WDT(char *arg)
@@ -674,8 +937,12 @@ static ssize_t exynos_debug_test_write(struct file *file,
 			break;
 		}
 
-	dev_info(exynos_debug_desc.dev, "%s() user_buf=[%s]\n", __func__, buf);
-	debug_force_error(buf);
+	if (!strncmp("clear", buf, 5)) {
+		clear_dbg_snapshot_test_regs();
+	} else {
+		dev_info(exynos_debug_desc.dev, "%s() user_buf=[%s]\n", __func__, buf);
+		debug_force_error(buf);
+	}
 
 	kfree(buf);
 	return count;
@@ -687,60 +954,93 @@ static ssize_t exynos_debug_test_read(struct file *file,
 {
 	char *buf;
 	size_t copy_cnt;
-	int i;
 	int ret = 0;
+	int i, pass;
 
 	buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
 	if (!buf)
 		return ret;
 
+	if (!dbg_snapshot_get_debug_test_runflag())
+		ret += snprintf(buf + ret, PAGE_SIZE - ret, "TEST NOT PERFORMED\n");
+	else if (dbg_snapshot_get_debug_test_run(ALL_FORCE_ERRORS))
+		ret += snprintf(buf + ret, PAGE_SIZE - ret, "ALL TEST PERFORMED\n");
+	else
+		ret += snprintf(buf + ret, PAGE_SIZE - ret, "INDIVIDUAL TESTS PERFORMED\n");
+
 	ret += snprintf(buf + ret, PAGE_SIZE - ret,
-			"=============================="
-			" DEBUG TEST EXAMPLES "
-			"==============================\n");
-	ret += snprintf(buf + ret, PAGE_SIZE - ret,
-			"%-30s%-15s%s\n", "INPUT_ARG(S)",
-			"AUTO_RESET", "RESET_RESON");
+			"=============== DEBUG TEST RESULT ===============\n");
 
 	for (i = 0; i < (int)ARRAY_SIZE(test_vector); i++) {
+		if (!test_vector[i].enabled) {
+			ret += snprintf(buf + ret, PAGE_SIZE - ret,
+					"TestCase%3d: [%30s] disabled.\n", i,
+							test_vector[i].arg);
+			continue;
+		}
+		if (!dbg_snapshot_get_debug_test_run(i)) {
+			ret += snprintf(buf + ret, PAGE_SIZE - ret,
+					"TestCase%3d: [%30s] not performed.\n", i,
+							test_vector[i].arg);
+			continue;
+		}
+		if (test_state & (1 << i)) {
+			ret += snprintf(buf + ret, PAGE_SIZE - ret,
+					"TestCase%3d: [%30s] testing...\n", i,
+							test_vector[i].arg);
+			continue;
+		}
+		switch (test_vector[i].reason) {
+		case REBOOT_REASON_WTSR:
+			if ((1 << i) & dbg_snapshot_get_debug_test_wtsr())
+				pass = 1;
+			else
+				pass = 0;
+			break;
+		case REBOOT_REASON_SMPL:
+			if ((1 << i) & dbg_snapshot_get_debug_test_smpl())
+				pass = 1;
+			else
+				pass = 0;
+			break;
+		case REBOOT_REASON_WDT:
+			if ((1 << i) & dbg_snapshot_get_debug_test_wdt())
+				pass = 1;
+			else
+				pass = 0;
+			break;
+		case REBOOT_REASON_PANIC:
+			if ((1 << i) & dbg_snapshot_get_debug_test_panic())
+				pass = 1;
+			else
+				pass = 0;
+			break;
+		default:
+			pass = 0;
+			break;
+		}
+
 		ret += snprintf(buf + ret, PAGE_SIZE - ret,
-			"%-30s", test_vector[i].arg);
-
-		if (test_vector[i].auto_reset)
-			ret += snprintf(buf + ret, PAGE_SIZE - ret,
-							"%-15s", "yes");
-		else
-			ret += snprintf(buf + ret, PAGE_SIZE - ret,
-							"%-15s", "no");
-
-		if (!test_vector[i].reason)
-			ret += snprintf(buf + ret, PAGE_SIZE - ret, "N/A");
-
-		if (test_vector[i].reason & REBOOT_REASON_WTSR)
-			ret += snprintf(buf + ret, PAGE_SIZE - ret, "WTSR ");
-
-		if (test_vector[i].reason & REBOOT_REASON_SMPL)
-			ret += snprintf(buf + ret, PAGE_SIZE - ret, "SMPL ");
-
-		if (test_vector[i].reason & REBOOT_REASON_WDT)
-			ret += snprintf(buf + ret, PAGE_SIZE - ret, "WDT ");
-
-		if (test_vector[i].reason & REBOOT_REASON_PANIC)
-			ret += snprintf(buf + ret, PAGE_SIZE - ret, "PANIC ");
-
-		ret += snprintf(buf + ret, PAGE_SIZE - ret, "\n");
+				"TestCase%3d: [%30s] result: [%s]\n",
+				i, test_vector[i].arg, pass ? "PASS" : "FAIL");
 	}
 
 	ret += snprintf(buf + ret, PAGE_SIZE - ret,
-			"========================================="
-			"========================================\n");
-
+			"reg info: panic[0x%x] wdt[0x%x] wtsr[0x%x] smpl[0x%x] run[0x%x]\n",
+						dbg_snapshot_get_debug_test_panic(),
+						dbg_snapshot_get_debug_test_wdt(),
+						dbg_snapshot_get_debug_test_wtsr(),
+						dbg_snapshot_get_debug_test_smpl(),
+						dbg_snapshot_get_debug_test_runflag());
+	ret += snprintf(buf + ret, PAGE_SIZE - ret,
+			"=================================================\n");
 	copy_cnt = ret;
 	ret = simple_read_from_buffer(user_buf, count, ppos, buf, copy_cnt);
 
 	kfree(buf);
 	return ret;
 }
+
 static const struct file_operations exynos_debug_test_file_fops = {
 	.open	= simple_open,
 	.read	= exynos_debug_test_read,
@@ -748,7 +1048,75 @@ static const struct file_operations exynos_debug_test_file_fops = {
 	.llseek	= default_llseek,
 };
 
-static int exynos_debug_test_parsing_dt(struct device_node *np)
+static ssize_t exynos_debug_test_enable_write(struct file *file,
+					const char __user *user_buf,
+					size_t count, loff_t *ppos)
+{
+	char *buf;
+	ssize_t ret_val = 0;
+	size_t copy_cnt;
+	int ret;
+
+	buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!buf)
+		return ret_val;
+
+	if (count > PAGE_SIZE)
+		copy_cnt = PAGE_SIZE;
+	else
+		copy_cnt = count;
+
+	ret = copy_from_user(buf, user_buf, copy_cnt);
+	ret_val = copy_cnt - ret;
+
+	if (ret_val && (buf[0] == '1')) {
+		ret = 0;
+		if (exynos_debug_desc.np)
+			ret = exynos_debug_test_desc_init(exynos_debug_desc.np);
+		else
+			dev_info(exynos_debug_desc.dev, "%s() no dvice tree entry\n", __func__);
+
+		if (ret)
+			dev_info(exynos_debug_desc.dev, "%s() fail to enable debug test[0x%x]\n",
+									__func__, ret);
+	} else {
+		dev_info(exynos_debug_desc.dev, "%s() copy count[%lu], input value[%c]\n",
+						__func__, ret_val, ret_val ? buf[0] : '0');
+	}
+
+	kfree(buf);
+	return ret_val;
+}
+
+static ssize_t exynos_debug_test_enable_read(struct file *file,
+				char __user *user_buf, size_t count,
+				loff_t *ppos)
+{
+	char *buf;
+	size_t copy_cnt;
+	int ret = 0;
+
+	buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!buf)
+		return ret;
+
+	snprintf(buf, PAGE_SIZE, "%sABLED\n", exynos_debug_desc.enabled ? "EN" : "DIS");
+	copy_cnt = strlen(buf);
+
+	ret = simple_read_from_buffer(user_buf, count, ppos, buf, copy_cnt);
+
+	kfree(buf);
+	return ret;
+}
+
+static const struct file_operations exynos_debug_test_enable_fops = {
+	.open	= simple_open,
+	.read	= exynos_debug_test_enable_read,
+	.write	= exynos_debug_test_enable_write,
+	.llseek	= default_llseek,
+};
+
+static int exynos_debug_test_desc_init(struct device_node *np)
 {
 	int ret = 0;
 
@@ -756,50 +1124,56 @@ static int exynos_debug_test_parsing_dt(struct device_node *np)
 	ret = of_property_read_u32(np, "ps_hold_control_offset",
 					&exynos_debug_desc.ps_hold_control_offset);
 	if (ret) {
-		dev_err(exynos_debug_desc.dev, "no data(ps_hold_control offset)\n");
+		dev_err(exynos_debug_desc.dev, "%s() no data(ps_hold_control offset)\n", __func__);
 		goto edt_desc_init_out;
 	}
 
-	ret = of_property_read_u32(np, "nr_cpu", &exynos_debug_desc.nr_cpu);
+	ret = of_property_read_u32(np, "nr_cpu",
+					&exynos_debug_desc.nr_cpu);
 	if (ret) {
-		dev_err(exynos_debug_desc.dev, "no data(nr_cpu)\n");
+		dev_err(exynos_debug_desc.dev, "%s() no data(nr_cpu)\n", __func__);
 		goto edt_desc_init_out;
 	}
 
 	ret = of_property_read_u32(np, "little_cpu_start",
-				&exynos_debug_desc.little_cpu_start);
+					&exynos_debug_desc.little_cpu_start);
 	if (ret) {
-		dev_info(exynos_debug_desc.dev, "no data(little_cpu_start)\n");
+		dev_info(exynos_debug_desc.dev, "%s() no data(little_cpu_start)\n", __func__);
 		exynos_debug_desc.little_cpu_start = -1;
 	}
 
-	ret = of_property_read_u32(np, "nr_little_cpu",	&exynos_debug_desc.nr_little_cpu);
+	ret = of_property_read_u32(np, "nr_little_cpu",
+					&exynos_debug_desc.nr_little_cpu);
 	if (ret) {
-		dev_info(exynos_debug_desc.dev, "no data(nr_little_cpu)\n");
+		dev_info(exynos_debug_desc.dev, "%s() no data(nr_little_cpu)\n", __func__);
 		exynos_debug_desc.nr_little_cpu = -1;
 	}
 
-	ret = of_property_read_u32(np, "mid_cpu_start",	&exynos_debug_desc.mid_cpu_start);
+	ret = of_property_read_u32(np, "mid_cpu_start",
+					&exynos_debug_desc.mid_cpu_start);
 	if (ret) {
-		dev_info(exynos_debug_desc.dev, "no data(mid_cpu_start)\n");
+		dev_info(exynos_debug_desc.dev, "%s() no data(mid_cpu_start)\n", __func__);
 		exynos_debug_desc.mid_cpu_start = -1;
 	}
 
-	ret = of_property_read_u32(np, "nr_mid_cpu", &exynos_debug_desc.nr_mid_cpu);
+	ret = of_property_read_u32(np, "nr_mid_cpu",
+					&exynos_debug_desc.nr_mid_cpu);
 	if (ret) {
-		dev_info(exynos_debug_desc.dev, "no data(nr_mid_cpu)\n");
+		dev_info(exynos_debug_desc.dev, "%s() no data(nr_mid_cpu)\n", __func__);
 		exynos_debug_desc.nr_mid_cpu = -1;
 	}
 
-	ret = of_property_read_u32(np, "big_cpu_start", &exynos_debug_desc.big_cpu_start);
+	ret = of_property_read_u32(np, "big_cpu_start",
+					&exynos_debug_desc.big_cpu_start);
 	if (ret) {
-		dev_info(exynos_debug_desc.dev, "no data(big_cpu_start)\n");
+		dev_info(exynos_debug_desc.dev, "%s() no data(big_cpu_start)\n", __func__);
 		exynos_debug_desc.big_cpu_start = -1;
 	}
 
-	ret = of_property_read_u32(np, "nr_big_cpu", &exynos_debug_desc.nr_big_cpu);
+	ret = of_property_read_u32(np, "nr_big_cpu",
+					&exynos_debug_desc.nr_big_cpu);
 	if (ret) {
-		dev_info(exynos_debug_desc.dev, "no data(nr_big_cpu)\n");
+		dev_info(exynos_debug_desc.dev, "%s() no data(nr_big_cpu)\n", __func__);
 		exynos_debug_desc.nr_big_cpu = -1;
 	}
 
@@ -808,7 +1182,7 @@ static int exynos_debug_test_parsing_dt(struct device_node *np)
 
 	/* create debugfs test file */
 	debugfs_create_file("test", 0644,
-			exynos_debug_desc.debugfs_root,
+			exynos_debug_desc.exynos_debug_test_debugfs_root,
 			NULL, &exynos_debug_test_file_fops);
 	ret = 0;
 	exynos_debug_desc.enabled = 1;
@@ -817,45 +1191,78 @@ edt_desc_init_out:
 	return ret;
 }
 
-static int exynos_debug_test_probe(struct platform_device *pdev)
+static const struct of_device_id of_exynos_debug_test_matches[] __initconst = {
+	{.compatible = "samsung,exynos-debug-test"},
+	{},
+};
+
+static int __init exynos_debug_test_init(void)
 {
-	struct device_node *np = pdev->dev.of_node;
+	struct device_node *np = NULL;
+	const char *enable_str;
 	int ret = 0;
 
-	dev_info(&pdev->dev, "%s() called\n", __func__);
+	exynos_debug_desc.dev = create_empty_device();
+	if (!exynos_debug_desc.dev)
+		panic("Exynos: create empty device fail\n");
+	dev_set_socdata(exynos_debug_desc.dev, "Exynos", "DBG_TEST");
 
-	exynos_debug_desc.debugfs_root =
-			debugfs_create_dir("exynos-debug-test", NULL);
-	if (!exynos_debug_desc.debugfs_root) {
-		dev_err(&pdev->dev, "cannot create debugfs dir\n");
+	dev_info(exynos_debug_desc.dev, "%s() called\n", __func__);
+
+	/* find device tree */
+	np = of_find_matching_node(NULL, of_exynos_debug_test_matches);
+	exynos_debug_desc.np = np;
+	if (!np) {
+		dev_err(exynos_debug_desc.dev, "%s() no device tree\n", __func__);
+		ret = -ENODEV;
+		goto edt_out;
+	}
+
+	/* create debugfs dir */
+	exynos_debug_desc.exynos_debug_test_debugfs_root =
+				debugfs_create_dir("exynos-debug-test", NULL);
+	if (!exynos_debug_desc.exynos_debug_test_debugfs_root) {
+		dev_err(exynos_debug_desc.dev, "%s() cannot create debugfs dir\n", __func__);
 		ret = -ENOMEM;
 		goto edt_out;
 	}
 
-	exynos_debug_desc.dev = &pdev->dev;
-	ret = exynos_debug_test_parsing_dt(np);
+	/* create debugfs enable file */
+	debugfs_create_file("enable", 0644,
+			exynos_debug_desc.exynos_debug_test_debugfs_root,
+			NULL, &exynos_debug_test_enable_fops);
+
+	/* checking debug test is enabled */
+	ret = of_property_read_string(np, "enabled", &enable_str);
+	if (ret) {
+		dev_err(exynos_debug_desc.dev, "%s() no data(enabled)\n", __func__);
+		goto edt_out;
+	}
+
+	if (strncmp(enable_str, "dbg_test", strlen("dbg_test")) &&
+					!dbg_snapshot_debug_test_enabled()) {
+		dev_info(exynos_debug_desc.dev, "%s() debug test is not enabled\n", __func__);
+		goto edt_out;
+	}
+
+	/* initializing desc data */
+	ret = exynos_debug_test_desc_init(np);
 	if (ret)
 		goto edt_out;
+
+	/* checking debug test is on going */
+	if (dbg_snapshot_debug_test_enabled()) {
+		if (dbg_snapshot_get_debug_test_run(ALL_FORCE_ERRORS)) {
+			INIT_DELAYED_WORK(&exynos_debug_desc.test_work,
+					exynos_debug_test_run_test);
+			schedule_delayed_work(&exynos_debug_desc.test_work, HZ * 20);
+		} else {
+			dbg_snapshot_set_debug_test_reg(0);
+		}
+	}
 
 edt_out:
 	dev_info(exynos_debug_desc.dev, "%s() ret=[0x%x]\n", __func__, ret);
 	return ret;
 }
-
-static const struct of_device_id exynos_debug_test_matches[] = {
-	{.compatible = "samsung,exynos-debug-test"},
-	{},
-};
-MODULE_DEVICE_TABLE(of, exynos_debug_test_matches);
-
-static struct platform_driver exynos_debug_test_driver = {
-	.probe		= exynos_debug_test_probe,
-	.driver		= {
-		.name	= "exynos-debug-test",
-		.of_match_table	= of_match_ptr(exynos_debug_test_matches),
-	},
-};
-module_platform_driver(exynos_debug_test_driver);
-
-MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Exynos Debug Test");
+late_initcall(exynos_debug_test_init);

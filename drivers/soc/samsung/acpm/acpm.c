@@ -17,25 +17,29 @@
 #include <linux/debugfs.h>
 #include <linux/interrupt.h>
 #include <linux/slab.h>
-#include <linux/reset/exynos-reset.h>
-#include <soc/samsung/debug-snapshot.h>
+#include <linux/debug-snapshot.h>
 #include <linux/soc/samsung/exynos-soc.h>
 #include <linux/sched/clock.h>
-#include <linux/module.h>
 
 #include "acpm.h"
 #include "acpm_ipc.h"
+#include "../cal-if/fvmap.h"
 #include "fw_header/framework.h"
 
 static int ipc_done;
 static unsigned long long ipc_time_start;
 static unsigned long long ipc_time_end;
-static void __iomem *fvmap_base_address;
 
 static struct acpm_info *exynos_acpm;
 
 static int acpm_send_data(struct device_node *node, unsigned int check_id,
 		struct ipc_config *config);
+
+extern int register_lcd_status_notifier(struct notifier_block *nb);
+extern int unregister_lcd_status_notifier(struct notifier_block *nb);
+extern unsigned int abox_get_routing_path(void);
+
+struct notifier_block acpm_lcd_nb;
 
 static int handle_dynamic_plugin(struct device_node *node, unsigned int id, unsigned int attach)
 {
@@ -94,12 +98,6 @@ static int firmware_update(struct device *dev, void *fw_base, const char *fw_nam
 	return 0;
 }
 
-void *get_fvmap_base(void)
-{
-	return fvmap_base_address;
-}
-EXPORT_SYMBOL_GPL(get_fvmap_base);
-
 static int plugins_init(void)
 {
 	struct plugin *plugins;
@@ -107,7 +105,7 @@ static int plugins_init(void)
 	unsigned int plugin_id;
 	char name[50];
 	const char *fw_name = NULL;
-	void __iomem *fw_base_addr = NULL;
+	void __iomem *fw_base_addr;
 	struct device_node *node, *child;
 	const __be32 *prop;
 	unsigned int offset;
@@ -160,7 +158,7 @@ static int plugins_init(void)
 						plugins[i].stay_attached, plugins[i].id, ret);
 
 			if (fw_name && strstr(fw_name, "dvfs"))
-				fvmap_base_address = fw_base_addr + plugins[i].size;
+				fvmap_init(fw_base_addr + plugins[i].size);
 
 		} else if (plugins[i].is_attached == 1 && plugins[i].stay_attached == 1) {
 			fw_name = (const char *)(acpm_srambase + plugins[i].fw_name);
@@ -168,14 +166,11 @@ static int plugins_init(void)
 			if (plugins[i].fw_name && fw_name &&
 					(strstr(fw_name, "DVFS") || strstr(fw_name, "dvfs"))) {
 
-				fvmap_base_address = acpm_srambase + (plugins[i].base_addr & ~0x1);
+				fw_base_addr = acpm_srambase + (plugins[i].base_addr & ~0x1);
 				prop = of_get_property(exynos_acpm->dev->of_node, "fvmap_offset", &len);
 				if (prop) {
 					offset = be32_to_cpup(prop);
-					fvmap_base_address += offset;
-					pr_err("acpm_sram_base: 0x%x\n", acpm_srambase);
-					pr_err("plugins[i].base_addr & ~0x1: 0x%x\n", (plugins[i].base_addr & ~0x1));
-					pr_err("fvmap_base_address: 0x%x\n", fvmap_base_address);
+					fvmap_init(fw_base_addr + offset);
 				}
 			}
 		}
@@ -297,7 +292,7 @@ void exynos_acpm_timer_clear(void)
 	writel(exynos_acpm->timer_cnt, exynos_acpm->timer_base + EXYNOS_TIMER_APM_TCVR);
 }
 
-static void exynos_acpm_reboot(void)
+void exynos_acpm_reboot(void)
 {
 	u32 soc_id, revision;
 
@@ -322,7 +317,6 @@ void exynos_acpm_force_apm_wdt_reset(void)
 
 	pr_err("ACPM force WDT reset. (ret: %d)\n", ret);
 }
-EXPORT_SYMBOL_GPL(exynos_acpm_force_apm_wdt_reset);
 
 static int acpm_send_data(struct device_node *node, unsigned int check_id,
 		struct ipc_config *config)
@@ -371,6 +365,39 @@ static int acpm_send_data(struct device_node *node, unsigned int check_id,
 	return ret;
 }
 
+static int acpm_lcd_notifier(struct notifier_block *nb,
+				unsigned long action, void *data)
+{
+	struct ipc_config config;
+	int ret = 0;
+	unsigned int cmd[4] = {0, };
+
+	u32 lcd_status = (u32)action;			/* 0: off, 1: on */
+	u32 abox_status = abox_get_routing_path();	/* 3: BT, 4: USB */
+
+	config.cmd = cmd;
+	config.cmd[0] = (1 << ACPM_IPC_PROTOCOL_TEST);
+	config.cmd[0] |= 0x4 << ACPM_IPC_PROTOCOL_ID;
+
+	if (lcd_status == 0 && (abox_status == 3 || abox_status == 4))
+		config.cmd[1] = 1;
+	else
+		config.cmd[1] = 0;
+
+	config.response = true;
+	config.indirection = false;
+
+	ret = acpm_send_data(exynos_acpm->dev->of_node, 4, &config);
+	if (ret) {
+		pr_err("%s, %d ipc send fail\n", __func__, __LINE__);
+		return NOTIFY_BAD;
+	}
+
+	config.cmd = NULL;
+
+	return NOTIFY_OK;
+}
+
 static int acpm_probe(struct platform_device *pdev)
 {
 	struct acpm_info *acpm;
@@ -403,16 +430,19 @@ static int acpm_probe(struct platform_device *pdev)
 		if (of_property_read_u32(node, "peritimer-cnt", &acpm->timer_cnt))
 		pr_warn("No matching property: peritiemr_cnt\n");
 
-	exynos_reboot_register_acpm_ops(exynos_acpm_reboot);
-
 	exynos_acpm = acpm;
 
 	acpm_debugfs_init(acpm);
 
 	exynos_acpm_timer_clear();
 
-	ret = plugins_init();
-	dev_info(&pdev->dev, "acpm probe done.\n");
+	acpm_lcd_nb.notifier_call = acpm_lcd_notifier;
+	ret = register_lcd_status_notifier(&acpm_lcd_nb);
+	if (ret < 0) {
+		pr_err("failed to register lcd_nb(%d)\n", ret);
+		return ret;
+	}
+
 	return ret;
 }
 
@@ -421,27 +451,10 @@ static int acpm_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static const struct of_device_id acpm_ipc_match[] = {
-	{ .compatible = "samsung,exynos-acpm-ipc" },
-	{},
-};
-MODULE_DEVICE_TABLE(of, acpm_ipc_match);
-
-static struct platform_driver samsung_acpm_ipc_driver = {
-	.probe	= acpm_ipc_probe,
-	.remove	= acpm_ipc_remove,
-	.driver	= {
-		.name = "exynos-acpm-ipc",
-		.owner	= THIS_MODULE,
-		.of_match_table	= acpm_ipc_match,
-	},
-};
-
 static const struct of_device_id acpm_match[] = {
 	{ .compatible = "samsung,exynos-acpm" },
 	{},
 };
-MODULE_DEVICE_TABLE(of, acpm_match);
 
 static struct platform_driver samsung_acpm_driver = {
 	.probe	= acpm_probe,
@@ -453,19 +466,18 @@ static struct platform_driver samsung_acpm_driver = {
 	},
 };
 
-static int exynos_acpm_init(void)
+static int __init exynos_acpm_init(void)
 {
-	platform_driver_register(&samsung_acpm_ipc_driver);
-	platform_driver_register(&samsung_acpm_driver);
-	return 0;
+	return platform_driver_register(&samsung_acpm_driver);
 }
-postcore_initcall_sync(exynos_acpm_init);
+arch_initcall_sync(exynos_acpm_init);
 
-static void exynos_acpm_exit(void)
+static int __init exynos_acpm_binary_update(void)
 {
-	platform_driver_unregister(&samsung_acpm_ipc_driver);
-	platform_driver_unregister(&samsung_acpm_driver);
-}
-module_exit(exynos_acpm_exit);
+	int ret;
 
-MODULE_LICENSE("GPL");
+	ret = plugins_init();
+
+	return ret;
+}
+fs_initcall_sync(exynos_acpm_binary_update);

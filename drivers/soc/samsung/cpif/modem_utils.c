@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2011 Samsung Electronics.
  *
@@ -19,6 +18,7 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
+#include <linux/miscdevice.h>
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
 #include <linux/ip.h>
@@ -39,9 +39,11 @@
 #include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
 #include <linux/delay.h>
+#include <linux/wakelock.h>
+#include <linux/debug-snapshot.h>
 #include <linux/bitops.h>
+#include <linux/smc.h>
 #include <soc/samsung/exynos-modem-ctrl.h>
-#include <soc/samsung/memlogger.h>
 
 #include <soc/samsung/acpm_ipc_ctrl.h>
 #include "modem_prj.h"
@@ -51,10 +53,10 @@
 #define CMD_SUSPEND	((u16)(0x00CA))
 #define CMD_RESUME	((u16)(0x00CB))
 
-#define TX_SEPARATOR	"cpif: >>>>>>>>>> Outgoing packet "
-#define RX_SEPARATOR	"cpif: Incoming packet <<<<<<<<<<"
+#define TX_SEPARATOR	"mif: >>>>>>>>>> Outgoing packet "
+#define RX_SEPARATOR	"mif: Incoming packet <<<<<<<<<<"
 #define LINE_SEPARATOR	\
-	"cpif: ------------------------------------------------------------"
+	"mif: ------------------------------------------------------------"
 #define LINE_BUFF_SIZE	80
 
 enum bit_debug_flags {
@@ -67,7 +69,7 @@ enum bit_debug_flags {
 	DEBUG_FLAG_CSVT,
 	DEBUG_FLAG_LOG,
 	DEBUG_FLAG_BT_DUN, /* for rx/tx of umts_router */
-	DEBUG_FLAG_ALL
+	DEBUG_FLAG_ALL,
 };
 
 #define DEBUG_FLAG_DEFAULT    (1 << DEBUG_FLAG_FMT | 1 << DEBUG_FLAG_MISC)
@@ -76,7 +78,7 @@ static unsigned long dflags = (DEBUG_FLAG_DEFAULT | 1 << DEBUG_FLAG_RFS | 1 << D
 #else
 static unsigned long dflags = (DEBUG_FLAG_DEFAULT);
 #endif
-module_param(dflags, ulong, 0664);
+module_param(dflags, ulong, S_IRUGO | S_IWUSR | S_IWGRP);
 MODULE_PARM_DESC(dflags, "modem_v1 debug flags");
 
 static unsigned long wakeup_dflags = (DEBUG_FLAG_DEFAULT | 1 << DEBUG_FLAG_RFS | 1 << DEBUG_FLAG_PS);
@@ -87,17 +89,13 @@ static const char *hex = "0123456789abcdef";
 
 static struct raw_notifier_head cp_crash_notifier;
 
-struct mif_buff_mng *g_mif_buff_mng;
+struct mif_buff_mng *g_mif_buff_mng = NULL;
 
 static inline void ts2utc(struct timespec *ts, struct utc_time *utc)
 {
 	struct tm tm;
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0))
-	time64_to_tm((ts->tv_sec - (sys_tz.tz_minuteswest * 60)), 0, &tm);
-#else
 	time_to_tm((ts->tv_sec - (sys_tz.tz_minuteswest * 60)), 0, &tm);
-#endif
 	utc->year = 1900 + (u32)tm.tm_year;
 	utc->mon = 1 + tm.tm_mon;
 	utc->day = tm.tm_mday;
@@ -110,16 +108,14 @@ static inline void ts2utc(struct timespec *ts, struct utc_time *utc)
 void get_utc_time(struct utc_time *utc)
 {
 	struct timespec ts;
-
 	getnstimeofday(&ts);
 	ts2utc(&ts, utc);
 }
-EXPORT_SYMBOL(get_utc_time);
 
 int mif_dump_log(struct modem_shared *msd, struct io_device *iod)
 {
 	unsigned long read_len = 0;
-	unsigned long flags;
+	unsigned long int flags;
 
 	spin_lock_irqsave(&msd->lock, flags);
 	while (read_len < MAX_MIF_BUFF_SIZE) {
@@ -163,7 +159,7 @@ void mif_ipc_log(enum mif_log_id id,
 	struct modem_shared *msd, const char *data, size_t len)
 {
 	struct mif_ipc_block *block;
-	unsigned long flags;
+	unsigned long int flags;
 
 	spin_lock_irqsave(&msd->lock, flags);
 
@@ -184,7 +180,7 @@ void _mif_irq_log(enum mif_log_id id, struct modem_shared *msd,
 	struct mif_irq_map map, const char *data, size_t len)
 {
 	struct mif_irq_block *block;
-	unsigned long flags;
+	unsigned long int flags;
 
 	spin_lock_irqsave(&msd->lock, flags);
 
@@ -207,7 +203,7 @@ void _mif_com_log(enum mif_log_id id,
 	struct modem_shared *msd, const char *format, ...)
 {
 	struct mif_common_block *block;
-	unsigned long flags;
+	unsigned long int flags;
 	va_list args;
 
 	spin_lock_irqsave(&msd->lock, flags);
@@ -226,13 +222,12 @@ void _mif_com_log(enum mif_log_id id,
 	vsnprintf(block->buff, MAX_COM_LOG_SIZE, format, args);
 	va_end(args);
 }
-EXPORT_SYMBOL(_mif_com_log);
 
 void _mif_time_log(enum mif_log_id id, struct modem_shared *msd,
 	struct timespec epoch, const char *data, size_t len)
 {
 	struct mif_time_block *block;
-	unsigned long flags;
+	unsigned long int flags;
 
 	spin_lock_irqsave(&msd->lock, flags);
 
@@ -287,7 +282,6 @@ inline void set_wakeup_packet_log(bool enable)
 {
 	wakeup_log_enable = enable;
 }
-EXPORT_SYMBOL(set_wakeup_packet_log);
 
 inline unsigned long get_log_flags(void)
 {
@@ -303,26 +297,27 @@ static inline bool log_enabled(u8 ch, struct link_device *ld)
 {
 	unsigned long flags = get_log_flags();
 
-	if (ld->is_fmt_ch && ld->is_fmt_ch(ch))
-		return test_bit(DEBUG_FLAG_FMT, &flags);
-	else if (ld->is_boot_ch && ld->is_boot_ch(ch))
-		return test_bit(DEBUG_FLAG_BOOT, &flags);
-	else if (ld->is_dump_ch && ld->is_dump_ch(ch))
-		return test_bit(DEBUG_FLAG_DUMP, &flags);
-	else if (ld->is_rfs_ch && ld->is_rfs_ch(ch))
-		return test_bit(DEBUG_FLAG_RFS, &flags);
-	else if (ld->is_csd_ch && ld->is_csd_ch(ch))
-		return test_bit(DEBUG_FLAG_CSVT, &flags);
-	else if (ld->is_log_ch && ld->is_log_ch(ch))
-		return test_bit(DEBUG_FLAG_LOG, &flags);
-	else if (ld->is_ps_ch && ld->is_ps_ch(ch))
+	if (test_bit(DEBUG_FLAG_ALL, &flags))
+		return 1;
+	if (ld->is_ps_ch(ch))
 		return test_bit(DEBUG_FLAG_PS, &flags);
-	else if (ld->is_router_ch && ld->is_router_ch(ch))
+	if (ld->is_fmt_ch(ch))
+		return test_bit(DEBUG_FLAG_FMT, &flags);
+	if (ld->is_log_ch(ch))
+		return test_bit(DEBUG_FLAG_LOG, &flags);
+	if (ld->is_router_ch(ch))
 		return test_bit(DEBUG_FLAG_BT_DUN, &flags);
-	else if (ld->is_misc_ch && ld->is_misc_ch(ch))
+	if (ld->is_rfs_ch(ch))
+		return test_bit(DEBUG_FLAG_RFS, &flags);
+	if (ld->is_csd_ch(ch))
+		return test_bit(DEBUG_FLAG_CSVT, &flags);
+	if (sipc5_misc_ch(ch))
 		return test_bit(DEBUG_FLAG_MISC, &flags);
-	else
-		return test_bit(DEBUG_FLAG_ALL, &flags);
+	if (ld->is_boot_ch(ch))
+		return test_bit(DEBUG_FLAG_BOOT, &flags);
+	if (ld->is_dump_ch(ch))
+		return test_bit(DEBUG_FLAG_DUMP, &flags);
+	return 0;
 }
 
 /* print ipc packet */
@@ -341,56 +336,19 @@ void mif_pkt(u8 ch, const char *tag, struct sk_buff *skb)
 
 	pr_skb(tag, skb, skbpriv(skb)->ld);
 }
-EXPORT_SYMBOL(mif_pkt);
 
 /* print buffer as hex string */
-#define PR_BUFFER_SIZE 128
 int pr_buffer(const char *tag, const char *data, size_t data_len,
 							size_t max_len)
 {
 	size_t len = min(data_len, max_len);
-	unsigned char str[PR_BUFFER_SIZE * 3]; /* 1 <= sizeof <= max_len*3 */
-
-	if (len > PR_BUFFER_SIZE)
-		len = PR_BUFFER_SIZE;
-
+	unsigned char str[len ? len * 3 : 1]; /* 1 <= sizeof <= max_len*3 */
 	dump2hex(str, (len ? len * 3 : 1), data, len);
 
 	/* don't change this printk to mif_debug for print this as level7 */
 	return pr_info("%s: %s(%ld): %s%s\n", MIF_TAG, tag, (long)data_len,
 			str, (len == data_len) ? "" : " ...");
 }
-EXPORT_SYMBOL(pr_buffer);
-
-#if IS_ENABLED(CONFIG_EXYNOS_MEMORY_LOGGER)
-int pr_buffer_memlog(const char *tag, const char *data, size_t data_len,
-							size_t max_len)
-{
-	size_t len = min(data_len, max_len);
-	unsigned char str[PR_BUFFER_SIZE * 3]; /* 1 <= sizeof <= max_len*3 */
-	struct utc_time utc;
-	static unsigned long count;
-
-	if (len > PR_BUFFER_SIZE)
-		len = PR_BUFFER_SIZE;
-
-	dump2hex(str, (len ? len * 3 : 1), data, len);
-
-	/* print UTC for every 64 packets */
-	if ((count & 0x3F) == 0) {
-		get_utc_time(&utc);
-		pr_memlog("[%02d:%02d:%02d.%03d] %s(%ld): %s%s\n", utc.hour,
-				utc.min, utc.sec, us2ms(utc.us), tag, (long)data_len,
-				str, (len == data_len) ? "" : " ...");
-	} else
-		pr_memlog("%s(%ld): %s%s\n", tag, (long)data_len, str,
-				(len == data_len) ? "" : " ...");
-	count++;
-
-	return 0;
-}
-EXPORT_SYMBOL(pr_buffer_memlog);
-#endif
 
 /* flow control CM from CP, it use in serial devices */
 int link_rx_flowctl_cmd(struct link_device *ld, const char *data, size_t len)
@@ -422,7 +380,7 @@ int link_rx_flowctl_cmd(struct link_device *ld, const char *data, size_t len)
 }
 
 struct io_device *get_iod_with_format(struct modem_shared *msd,
-			u32 format)
+			enum dev_format format)
 {
 	struct rb_node *n = msd->iodevs_tree_fmt.rb_node;
 
@@ -450,10 +408,9 @@ void insert_iod_with_channel(struct modem_shared *msd, unsigned int channel,
 	msd->ch[idx] = channel;
 	msd->num_channels++;
 }
-EXPORT_SYMBOL(insert_iod_with_channel);
 
 struct io_device *insert_iod_with_format(struct modem_shared *msd,
-		u32 format, struct io_device *iod)
+		enum dev_format format, struct io_device *iod)
 {
 	struct rb_node **p = &msd->iodevs_tree_fmt.rb_node;
 	struct rb_node *parent = NULL;
@@ -475,7 +432,17 @@ struct io_device *insert_iod_with_format(struct modem_shared *msd,
 	rb_insert_color(&iod->node_fmt, &msd->iodevs_tree_fmt);
 	return NULL;
 }
-EXPORT_SYMBOL(insert_iod_with_format);
+
+void iodevs_for_each(struct modem_shared *msd, action_fn action, void *args)
+{
+	int i;
+
+	for (i = 0; i < msd->num_channels; i++) {
+		u8 ch = msd->ch[i];
+		struct io_device *iod = msd->ch2iod[ch];
+		action(iod, args);
+	}
+}
 
 void iodev_netif_wake(struct io_device *iod, void *args)
 {
@@ -496,9 +463,8 @@ void iodev_netif_stop(struct io_device *iod, void *args)
 void netif_tx_flowctl(struct modem_shared *msd, bool tx_stop)
 {
 	struct io_device *iod;
-	unsigned long flags;
 
-	spin_lock_irqsave(&msd->active_list_lock, flags);
+	spin_lock(&msd->active_list_lock);
 	list_for_each_entry(iod, &msd->activated_ndev_list, node_ndev) {
 		if (tx_stop) {
 			netif_stop_subqueue(iod->ndev, 0);
@@ -516,7 +482,7 @@ void netif_tx_flowctl(struct modem_shared *msd, bool tx_stop)
 #endif
 		}
 	}
-	spin_unlock_irqrestore(&msd->active_list_lock, flags);
+	spin_unlock(&msd->active_list_lock);
 }
 
 void stop_net_iface(struct link_device *ld, unsigned int channel)
@@ -542,7 +508,6 @@ exit:
 void stop_net_ifaces(struct link_device *ld)
 {
 	unsigned long flags;
-
 	spin_lock_irqsave(&ld->netif_lock, flags);
 
 	if (!atomic_read(&ld->netif_stopped)) {
@@ -554,7 +519,6 @@ void stop_net_ifaces(struct link_device *ld)
 
 	spin_unlock_irqrestore(&ld->netif_lock, flags);
 }
-EXPORT_SYMBOL(stop_net_ifaces);
 
 void resume_net_iface(struct link_device *ld, unsigned int channel)
 {
@@ -586,12 +550,12 @@ void resume_net_ifaces(struct link_device *ld)
 		if (ld->msd)
 			netif_tx_flowctl(ld->msd, false);
 
+		complete_all(&ld->raw_tx_resumed);
 		atomic_set(&ld->netif_stopped, 0);
 	}
 
 	spin_unlock_irqrestore(&ld->netif_lock, flags);
 }
-EXPORT_SYMBOL(resume_net_ifaces);
 
 /*
  * @brief		ipv4 string to be32 (big endian 32bits integer)
@@ -616,7 +580,6 @@ __be32 ipv4str_to_be32(const char *ipv4str, size_t count)
 
 	return *((__be32 *)ip);
 }
-EXPORT_SYMBOL(ipv4str_to_be32);
 
 void mif_add_timer(struct timer_list *timer, unsigned long expire,
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0))
@@ -640,7 +603,6 @@ void mif_add_timer(struct timer_list *timer, unsigned long expire,
 
 	add_timer(timer);
 }
-EXPORT_SYMBOL(mif_add_timer);
 
 void mif_print_data(const u8 *data, int len)
 {
@@ -819,8 +781,7 @@ static void strcat_tcp_header(char *buff, u8 *pkt)
 	char line[LINE_BUFF_SIZE] = {0, };
 	char flag_str[32] = {0, };
 
-/*
- * -------------------------------------------------------------------------
+/*-------------------------------------------------------------------------
 
 				TCP Header Format
 
@@ -844,8 +805,7 @@ static void strcat_tcp_header(char *buff, u8 *pkt)
 	|                             data                              |
 	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
--------------------------------------------------------------------------
-*/
+-------------------------------------------------------------------------*/
 
 	snprintf(line, LINE_BUFF_SIZE,
 		"%s: TCP:: Src.Port %u, Dst.Port %u\n",
@@ -892,8 +852,7 @@ static void strcat_udp_header(char *buff, u8 *pkt)
 	struct udphdr *udph = (struct udphdr *)pkt;
 	char line[LINE_BUFF_SIZE] = {0, };
 
-/*
- * -------------------------------------------------------------------------
+/*-------------------------------------------------------------------------
 
 				UDP Header Format
 
@@ -905,8 +864,7 @@ static void strcat_udp_header(char *buff, u8 *pkt)
 	|                             data                              |
 	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
--------------------------------------------------------------------------
-*/
+-------------------------------------------------------------------------*/
 
 	snprintf(line, LINE_BUFF_SIZE,
 		"%s: UDP:: Src.Port %u, Dst.Port %u\n",
@@ -942,8 +900,7 @@ void print_ipv4_packet(const u8 *ip_pkt, enum direction dir)
 	char line[LINE_BUFF_SIZE] = {0, };
 	char flag_str[16] = {0, };
 
-/*
- * ---------------------------------------------------------------------------
+/*---------------------------------------------------------------------------
 				IPv4 Header Format
 
 	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -969,8 +926,7 @@ void print_ipv4_packet(const u8 *ip_pkt, enum direction dir)
 		The 2nd bit is "Dont Fragment" bit.
 		The 3rd bit is "More Fragments" bit.
 
----------------------------------------------------------------------------
-*/
+---------------------------------------------------------------------------*/
 
 	if (iph->version != 4)
 		return;
@@ -1082,7 +1038,6 @@ void mif_init_irq(struct modem_irq *irq, unsigned int num, const char *name,
 	irq->flags = flags;
 	mif_info("name:%s num:%d flags:0x%08lX\n", name, num, flags);
 }
-EXPORT_SYMBOL(mif_init_irq);
 
 int mif_request_irq(struct modem_irq *irq, irq_handler_t isr, void *data)
 {
@@ -1103,7 +1058,6 @@ int mif_request_irq(struct modem_irq *irq, irq_handler_t isr, void *data)
 
 	return 0;
 }
-EXPORT_SYMBOL(mif_request_irq);
 
 void mif_enable_irq(struct modem_irq *irq)
 {
@@ -1115,7 +1069,8 @@ void mif_enable_irq(struct modem_irq *irq)
 	spin_lock_irqsave(&irq->lock, flags);
 
 	if (irq->active) {
-		mif_err("%s(#%d) is already active <%ps>\n", irq->name, irq->num, CALLER);
+		mif_err("%s(#%d) is already active <%pf>\n",
+			irq->name, irq->num, CALLER);
 		goto exit;
 	}
 
@@ -1124,12 +1079,12 @@ void mif_enable_irq(struct modem_irq *irq)
 
 	irq->active = true;
 
-	mif_info("%s(#%d) is enabled <%ps>\n", irq->name, irq->num, CALLER);
+	mif_info("%s(#%d) is enabled <%pf>\n",
+		irq->name, irq->num, CALLER);
 
 exit:
 	spin_unlock_irqrestore(&irq->lock, flags);
 }
-EXPORT_SYMBOL(mif_enable_irq);
 
 void mif_disable_irq(struct modem_irq *irq)
 {
@@ -1141,7 +1096,8 @@ void mif_disable_irq(struct modem_irq *irq)
 	spin_lock_irqsave(&irq->lock, flags);
 
 	if (!irq->active) {
-		mif_info("%s(#%d) is not active <%ps>\n", irq->name, irq->num, CALLER);
+		mif_err("%s(#%d) is not active <%pf>\n",
+			irq->name, irq->num, CALLER);
 		goto exit;
 	}
 
@@ -1150,29 +1106,36 @@ void mif_disable_irq(struct modem_irq *irq)
 
 	irq->active = false;
 
-	mif_info("%s(#%d) is disabled <%ps>\n", irq->name, irq->num, CALLER);
+	mif_info("%s(#%d) is disabled <%pf>\n",
+		irq->name, irq->num, CALLER);
 
 exit:
 	spin_unlock_irqrestore(&irq->lock, flags);
 }
-EXPORT_SYMBOL(mif_disable_irq);
 
-bool mif_gpio_set_value(struct cpif_gpio *gpio, int value, unsigned int delay_ms)
+bool mif_gpio_set_value(unsigned int gpio, int value, unsigned int delay_ms)
 {
 	int dup = 0;
+	char *name = NULL;
+	struct gpio_desc *desc = NULL;
 
-	if (!gpio_is_valid(gpio->num)) {
-		mif_err("SET GPIO %d is failed\n", gpio->num);
+	if (!gpio_is_valid(gpio)) {
+		mif_err("SET GPIO %d is failed\n", gpio);
 		return false;
 	}
 
-	if (gpio_get_value(gpio->num) == value)
+	if (gpio_get_value(gpio) == value) {
 		dup = 1;
+	}
 
 	/* set gpio even if it is set already */
-	gpio_set_value(gpio->num, value);
+	gpio_set_value(gpio, value);
 
-	mif_info("SET GPIO %s = %d (wait %dms, dup %d)\n", gpio->label, value, delay_ms, dup);
+	desc = gpio_to_desc(gpio);
+	if (desc != NULL && gpiod_get_consumer_name(desc, &name) == 0)
+		mif_info("SET GPIO %s = %d (wait %dms, dup %d)\n", name, value, delay_ms, dup);
+	else
+		mif_info("SET GPIO %d = %d (wait %dms, dup %d)\n", gpio, value, delay_ms, dup);
 
 	if (delay_ms > 0 && !dup) {
 		if (in_interrupt() || irqs_disabled())
@@ -1186,24 +1149,31 @@ bool mif_gpio_set_value(struct cpif_gpio *gpio, int value, unsigned int delay_ms
 	return (!dup);
 }
 
-int mif_gpio_get_value(struct cpif_gpio *gpio, bool log_print)
+int mif_gpio_get_value(unsigned int gpio, bool log_print)
 {
 	int value;
+	char *name = NULL;
+	struct gpio_desc *desc = NULL;
 
-	if (!gpio_is_valid(gpio->num)) {
-		mif_err("GET GPIO %d is failed\n", gpio->num);
+	if (!gpio_is_valid(gpio)) {
+		mif_err("GET GPIO %d is failed\n", gpio);
 		return -EINVAL;
 	}
 
-	value = gpio_get_value(gpio->num);
+	value = gpio_get_value(gpio);
 
-	if (log_print)
-		mif_info("GET GPIO %s = %d\n", gpio->label, value);
+	if (log_print) {
+		desc = gpio_to_desc(gpio);
+		if (desc != NULL && gpiod_get_consumer_name(desc, &name) == 0)
+			mif_info("GET GPIO %s = %d\n", name, value);
+		else
+			mif_info("GET GPIO %d = %d\n", gpio, value);
+	}
 
 	return value;
 }
 
-int mif_gpio_toggle_value(struct cpif_gpio *gpio, int delay_ms)
+int mif_gpio_toggle_value(unsigned int gpio, int delay_ms)
 {
 	int value;
 
@@ -1212,6 +1182,51 @@ int mif_gpio_toggle_value(struct cpif_gpio *gpio, int delay_ms)
 	mif_gpio_set_value(gpio, value, 0);
 
 	return value;
+}
+
+struct file *mif_open_file(const char *path)
+{
+	struct file *fp;
+	mm_segment_t old_fs;
+
+	old_fs = get_fs();
+	set_fs(get_ds());
+
+	fp = filp_open(path, O_RDWR|O_CREAT|O_APPEND, 0666);
+
+	set_fs(old_fs);
+
+	if (IS_ERR(fp))
+		return NULL;
+
+	return fp;
+}
+
+void mif_save_file(struct file *fp, const char *buff, size_t size)
+{
+	int ret;
+	mm_segment_t old_fs;
+
+	old_fs = get_fs();
+	set_fs(get_ds());
+
+	ret = fp->f_op->write(fp, buff, size, &fp->f_pos);
+	if (ret < 0)
+		mif_err("ERR! write fail\n");
+
+	set_fs(old_fs);
+}
+
+void mif_close_file(struct file *fp)
+{
+	mm_segment_t old_fs;
+
+	old_fs = get_fs();
+	set_fs(get_ds());
+
+	filp_close(fp, NULL);
+
+	set_fs(old_fs);
 }
 
 int board_gpio_export(struct device *dev,
@@ -1263,7 +1278,6 @@ void mif_stop_logging(void)
 {
 	acpm_stop_log();
 }
-EXPORT_SYMBOL(mif_stop_logging);
 
 static LIST_HEAD(bm_list);
 struct mif_buff_mng *init_mif_buff_mng(unsigned char *buffer_start,
@@ -1320,7 +1334,6 @@ struct mif_buff_mng *init_mif_buff_mng(unsigned char *buffer_start,
 
 	return bm;
 }
-EXPORT_SYMBOL(init_mif_buff_mng);
 
 void exit_mif_buff_mng(struct mif_buff_mng *bm)
 {
@@ -1335,7 +1348,6 @@ void exit_mif_buff_mng(struct mif_buff_mng *bm)
 		kfree(bm);
 	}
 }
-EXPORT_SYMBOL(exit_mif_buff_mng);
 
 void *alloc_mif_buff(struct mif_buff_mng *bm)
 {
@@ -1360,7 +1372,7 @@ void *alloc_mif_buff(struct mif_buff_mng *bm)
 	spin_lock_irqsave(&bm->lock, flags);
 
 	for (i = bm->current_map_index ; i < bm->buffer_map_size; i++) {
-		test_map = (uint64_t)bm->buffer_map[i];
+		test_map = (uint64_t) bm->buffer_map[i];
 		test_map = ~test_map;
 		last_bit_set = fls64(test_map);
 
@@ -1387,7 +1399,7 @@ void *alloc_mif_buff(struct mif_buff_mng *bm)
 
 	if (find_flag == false) {
 		for (i = 0 ; i < bm->current_map_index; i++) {
-			test_map = (uint64_t)bm->buffer_map[i];
+			test_map = (uint64_t) bm->buffer_map[i];
 			test_map = ~test_map;
 			last_bit_set = fls64(test_map);
 
@@ -1411,6 +1423,7 @@ void *alloc_mif_buff(struct mif_buff_mng *bm)
 #endif
 			break;
 		}
+
 	}
 
 	if (find_flag == false) {
@@ -1438,7 +1451,6 @@ void *alloc_mif_buff(struct mif_buff_mng *bm)
 
 	return (void *)buff_allocated;
 }
-EXPORT_SYMBOL(alloc_mif_buff);
 
 int free_mif_buff(struct mif_buff_mng *bm, void *buffer)
 {
@@ -1456,7 +1468,7 @@ int free_mif_buff(struct mif_buff_mng *bm, void *buffer)
 	addr_diff = (unsigned int)(uc_buffer - bm->buffer_start);
 
 	if (addr_diff > bm->buffer_size) {
-		mif_err_limited("ERR Buffer:%pK is not my pool one.\n", uc_buffer);
+		mif_err("ERR Buffer:%pK is not my pool one.\n", uc_buffer);
 		return -1;
 	}
 
@@ -1470,7 +1482,7 @@ int free_mif_buff(struct mif_buff_mng *bm, void *buffer)
 #endif
 
 	if ((bm->buffer_map[i] & (MIF_64BIT_FIRST_BIT >> j)) == 0) {
-		mif_err_limited("ERR Buffer:%pK is allready freed\n", uc_buffer);
+		mif_err("ERR Buffer:%pK is allready freed\n", uc_buffer);
 		return -1;
 	}
 
@@ -1488,7 +1500,6 @@ int free_mif_buff(struct mif_buff_mng *bm, void *buffer)
 #endif
 	return 0;
 }
-EXPORT_SYMBOL(free_mif_buff);
 
 bool __skb_free_head_cp_zerocopy(struct sk_buff *skb)
 {
@@ -1503,28 +1514,166 @@ bool __skb_free_head_cp_zerocopy(struct sk_buff *skb)
 
 	return false;
 }
-EXPORT_SYMBOL(__skb_free_head_cp_zerocopy);
-
-void cpif_enable_sw_zerocopy(void)
-{
-	struct mif_buff_mng *bm;
-
-	mif_info("enabled\n");
-	list_for_each_entry(bm, &bm_list, node)
-		bm->enable_sw_zerocopy = true;
-}
-EXPORT_SYMBOL(cpif_enable_sw_zerocopy);
 
 const char *get_cpif_driver_version(void)
 {
 	return &(cpif_driver_version[0]);
 }
-EXPORT_SYMBOL(get_cpif_driver_version);
 
-#if IS_ENABLED(CONFIG_CPIF_MBIM)
+#if defined(CONFIG_SEC_MODEM_S5000AP) && defined(CONFIG_SEC_MODEM_S5100)
+struct rmnet_iod_storage rmnet_iod = {{RMNET_LINK_4G,}, };
+static atomic_t cp_upload_cnt;
+
+void insert_rmnet_iod_with_channel(struct io_device *iod, u8 type)
+{
+	u8 ch;
+	u8 id;
+
+	if (!iod)
+		return;
+
+	if (sipc_ps_ch(iod->ch) &&
+		((type >= 0) && (type < MAX_RMNET_LINK))) {
+
+		ch = iod->ch;
+		id = ch - SIPC_CH_ID_PDP_0;
+
+		rmnet_iod.iod_pot[type].rmnet_ch2id[ch] = id;
+		rmnet_iod.iod_pot[type].rmnet[id] = iod;
+
+		mif_info("rmnet_iod saved (ch:%d, iod:%s - addr:%p)\n",
+				ch, iod->name, iod);
+	}
+}
+
+struct io_device *get_static_rmnet_iod_with_channel(u8 ch)
+{
+	struct io_device *iod;
+	u8 id;
+
+	if (sipc_ps_ch(ch)) {
+		id = rmnet_iod.iod_pot[RMNET_LINK_4G].rmnet_ch2id[ch];
+		iod = rmnet_iod.iod_pot[RMNET_LINK_4G].rmnet[id];
+
+		return iod;
+	}
+
+	return NULL;
+}
+
+struct io_device *get_current_rmnet_tx_iod(u8 ch)
+{
+	struct io_device *iod = get_static_rmnet_iod_with_channel(ch);
+	struct link_device *ld = iod->__current_link;
+	struct mem_link_device *mld = ld_to_mem_link_device(ld);
+	u32 path = mld->ulpath_prev.ctl[(ch - SIPC_CH_ID_PDP_0)].path;
+	struct io_device *tx_iod = NULL;
+	u8 id;
+
+	if (sipc_ps_ch(iod->ch)) {
+		id = rmnet_iod.iod_pot[path].rmnet_ch2id[iod->ch];
+		tx_iod = rmnet_iod.iod_pot[path].rmnet[id];
+	} else
+		mif_err("iod ch is not PS channel\n");
+
+	return tx_iod;
+}
+
+void print_ulpath_table(struct mem_link_device *mld)
+{
+	int i;
+
+	for (i = 0; i < RMNET_COUNT; i++)
+		mif_info("rmnet%d: status/path - %d/%d\n",
+			i,
+			mld->ulpath->ctl[i].status,
+			mld->ulpath->ctl[i].path);
+}
+
+int update_ul_path_table(struct mem_link_device *mld)
+{
+	int i;
+	bool suspend_req = false;
+	bool resume_req = false;
+
+	for (i = 0; i < RMNET_COUNT; i++) {
+		if ((mld->ulpath->ctl[i].status != mld->ulpath_prev.ctl[i].status) ||
+			(mld->ulpath->ctl[i].path != mld->ulpath_prev.ctl[i].path)) {
+
+			mif_info("[%d] status/path - Old:%d/%d, New:%d/%d\n",
+				i,
+				mld->ulpath_prev.ctl[i].status,
+				mld->ulpath_prev.ctl[i].path,
+				mld->ulpath->ctl[i].status,
+				mld->ulpath->ctl[i].path);
+
+			mld->ulpath_prev.ctl[i].status = mld->ulpath->ctl[i].status;
+			mld->ulpath_prev.ctl[i].path = mld->ulpath->ctl[i].path;
+
+			if (mld->ulpath_prev.ctl[i].status == 1)
+				resume_req = true;
+			else
+				suspend_req = true;
+		}
+	}
+
+	print_ulpath_table(mld);
+
+	if (suspend_req && resume_req) {
+		mif_err("ERR both suspend & resume were requested\n");
+		return -EINVAL;
+	}
+
+	if (suspend_req) {
+		mif_info("Suspend TX flowctrl\n");
+		tx_flowctrl_suspend(mld);
+	}
+
+	if (resume_req) {
+		mif_info("Resume TX flowctrl\n");
+		tx_flowctrl_resume(mld);
+	}
+
+	return 0;
+}
+
+int update_rmnet_status(struct io_device *iod, bool open)
+{
+	struct link_device *ld = iod->__current_link;
+	struct mem_link_device *mld = ld_to_mem_link_device(ld);
+	u8 ch = iod->ch;
+	u8 id = ch - SIPC_CH_ID_PDP_0;
+
+	if (sipc_ps_ch(iod->ch)) {
+		mif_info("Update rmnet state: %s to %d\n", iod->name, open);
+		mld->ulpath_prev.ctl[id].status = open;
+		mld->ulpath->ctl[id].status = open;
+	}
+
+	print_ulpath_table(mld);
+
+	return 0;
+}
+
+void reset_cp_upload_cnt(void)
+{
+	atomic_set(&cp_upload_cnt, 0);
+}
+
+bool check_cp_upload_cnt(void)
+{
+	atomic_inc(&cp_upload_cnt);
+	if (atomic_read(&cp_upload_cnt) == 2)
+		return true;
+	else
+		return false;
+}
+#endif /* CONFIG_SEC_MODEM_S5000AP && CONFIG_SEC_MODEM_S5100 */
+
 /*
  * Support additional packet capture
  */
+#ifdef CONFIG_USB_CONFIGFS_F_MBIM
 extern struct list_head ptype_all __read_mostly;
 void mif_queue_skb(struct sk_buff *skb, int dir)
 {
@@ -1537,10 +1686,12 @@ void mif_queue_skb(struct sk_buff *skb, int dir)
 
 	list_for_each_entry_rcu(ptype, ptype_list, list) {
 		if (pt_prev) {
+			local_bh_disable();
 			skb_orphan_frags_rx(skb2, GFP_ATOMIC);
 			refcount_inc(&skb2->users);
 			pt_prev->func(skb2, skb2->dev, pt_prev, skb->dev);
 			pt_prev = ptype;
+			local_bh_enable();
 			continue;
 		}
 
@@ -1574,97 +1725,13 @@ void mif_queue_skb(struct sk_buff *skb, int dir)
 
 out_unlock:
 	if (pt_prev) {
-		if (!skb_orphan_frags_rx(skb2, GFP_ATOMIC))
+		if (!skb_orphan_frags_rx(skb2, GFP_ATOMIC)) {
+			local_bh_disable();
 			pt_prev->func(skb2, skb->dev, pt_prev, skb->dev);
-		else
+			local_bh_enable();
+		} else
 			kfree_skb(skb2);
 	}
 	rcu_read_unlock_bh();
 }
 #endif
-
-#if IS_ENABLED(CONFIG_EXYNOS_MEMORY_LOGGER)
-static int cpif_memlog_file_completed(struct memlog_obj *obj, u32 flags)
-{
-	/* NOP */
-	return 0;
-}
-
-static int cpif_memlog_status_notify(struct memlog_obj *obj, u32 flags)
-{
-	/* NOP */
-	return 0;
-}
-
-static int cpif_memlog_level_notify(struct memlog_obj *obj, u32 flags)
-{
-	/* NOP */
-	return 0;
-}
-
-static int cpif_memlog_enable_notify(struct memlog_obj *obj, u32 flags)
-{
-	/* NOP */
-	return 0;
-}
-
-static const struct memlog_ops cpif_memlog_ops = {
-	.file_ops_completed = cpif_memlog_file_completed,
-	.log_status_notify = cpif_memlog_status_notify,
-	.log_level_notify = cpif_memlog_level_notify,
-	.log_enable_notify = cpif_memlog_enable_notify,
-};
-
-struct cpif_memlog cpif_memlog;
-
-unsigned int get_cpif_memlog_log_enabled(void)
-{
-	return cpif_memlog.log_enable;
-}
-EXPORT_SYMBOL(get_cpif_memlog_log_enabled);
-
-struct memlog_obj *get_cpif_memlog_log_obj(void)
-{
-	return cpif_memlog.log_obj;
-}
-EXPORT_SYMBOL(get_cpif_memlog_log_obj);
-
-void cpif_init_memlog(struct platform_device *pdev)
-{
-	struct cpif_memlog *memlog = &cpif_memlog;
-	struct memlog *desc;
-	struct memlog_obj *log_obj;
-	int ret;
-
-	mif_info("+++\n");
-
-	ret = memlog_register("CPIF", &pdev->dev, &desc);
-	if (ret) {
-		mif_err("failed to register memlog\n");
-		return;
-	}
-
-	memlog->desc = desc;
-	desc->ops = cpif_memlog_ops;
-
-	log_obj = memlog_alloc_printf(desc,
-					CPIF_MEMLOG_SIZE,
-					NULL,
-					"log-mem",
-					0);
-
-	if (log_obj) {
-		memlog->log_obj = log_obj;
-		memlog->log_enable = 1;
-	} else {
-		mif_err("failed to alloc memlog memory for log\n");
-		return;
-	}
-
-	mif_info("---\n");
-}
-EXPORT_SYMBOL(cpif_init_memlog);
-#endif
-
-MODULE_DESCRIPTION("Samsung modem util driver");
-MODULE_LICENSE("GPL");

@@ -21,6 +21,7 @@
 #define SMC_DRM_HDCP_FUNC_TEST		((unsigned int)0x82002141)
 #define SMC_DRM_DP_CONNECT_INFO		((unsigned int)0x82002142)
 
+
 /**
  * HDCP TEE service commands
  */

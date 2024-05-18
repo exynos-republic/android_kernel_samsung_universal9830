@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * PCIe modem control driver for S51xx series
  *
@@ -19,6 +18,7 @@
 #include <linux/module.h>
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
+#include <linux/miscdevice.h>
 #include <linux/if_arp.h>
 #include <linux/version.h>
 
@@ -32,6 +32,7 @@
 #include <linux/irq.h>
 #include <linux/gpio.h>
 #include <linux/delay.h>
+#include <linux/wakelock.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/pci.h>
@@ -61,7 +62,6 @@ static int s51xx_pcie_read_procmem(struct seq_file *m, void *v)
 
 	return 0;
 }
-
 static int s51xx_pcie_proc_open(struct inode *inode, struct  file *file)
 {
 	return single_open(file, s51xx_pcie_read_procmem, NULL);
@@ -204,7 +204,6 @@ check_cpl_timeout:
 		return 0;
 	}
 
-	exynos_pcie_rc_register_dump(s51xx_pcie->pcie_channel_num);
 	return -EAGAIN;
 }
 
@@ -223,6 +222,7 @@ void first_save_s51xx_status(struct pci_dev *pdev)
 		mif_err("MSI-DBG: s51xx pcie.pci_saved_configs is NULL(s51xx config NOT saved)\n");
 	else
 		mif_err("first s51xx config status save: done\n");
+
 }
 
 void s51xx_pcie_save_state(struct pci_dev *pdev)
@@ -258,6 +258,7 @@ void s51xx_pcie_save_state(struct pci_dev *pdev)
 	pci_wake_from_d3(pdev, false);
 	if (pci_set_power_state(pdev, PCI_D3hot))
 		mif_err("Can't set D3 state!!!!\n");
+
 }
 
 void s51xx_pcie_restore_state(struct pci_dev *pdev)
@@ -297,7 +298,7 @@ void s51xx_pcie_restore_state(struct pci_dev *pdev)
 	/* DBG: print out EP config values after restore_state */
 	s51xx_pcie_chk_ep_conf(pdev);
 
-#if IS_ENABLED(CONFIG_DISABLE_PCIE_CP_L1_2)
+#ifdef CONFIG_DISABLE_PCIE_CP_L1_2
 	/* Disable L1.2 after PCIe power on */
 	s51xx_pcie_l1ss_ctrl(0);
 #else
@@ -338,6 +339,7 @@ void disable_msi_int(struct pci_dev *pdev)
 	 * pci_disable_msi(s51xx_pcie.s51xx_pdev);
 	 * pci_config_pm_runtime_put(&s51xx_pcie.s51xx_pdev->dev);
 	 */
+
 }
 
 int s51xx_pcie_request_msi_int(struct pci_dev *pdev, int int_num)
@@ -376,7 +378,7 @@ static void s51xx_pcie_linkdown_cb(struct exynos_pcie_notify *noti)
 
 	pr_err("s51xx Link-Down notification callback function!!!\n");
 
-	if (mc->pcie_powered_on == false) {
+	if(mc->pcie_powered_on == false) {
 		pr_info("%s: skip cp crash during dislink sequence\n", __func__);
 		exynos_pcie_set_perst_gpio(mc->pcie_ch_num, 0);
 	} else {
@@ -420,8 +422,8 @@ static int s51xx_pcie_probe(struct pci_dev *pdev,
 	int resno = 8;
 	u32 val, db_addr;
 
-	dev_info(dev, "%s EP driver Probe(%s), chNum: %d\n",
-			driver->name, __func__, mc->pcie_ch_num);
+	dev_info(dev, "%s EP driver Probe(%s), chNum: %d\n", driver->name, __func__,
+			mc->pcie_ch_num);
 
 	s51xx_pcie = devm_kzalloc(dev, sizeof(*s51xx_pcie), GFP_KERNEL);
 	s51xx_pcie->s51xx_pdev = pdev;
@@ -431,7 +433,8 @@ static int s51xx_pcie_probe(struct pci_dev *pdev,
 
 	mc->s51xx_pdev = pdev;
 
-	if (of_property_read_u32(mc_dev->of_node, "pci_db_addr", &db_addr)) {
+	if (of_property_read_u32(mc_dev->of_node, "pci_db_addr",
+					&db_addr)) {
 		dev_err(dev, "Failed to parse the EP DB base address\n");
 		return -EINVAL;
 	}
@@ -441,7 +444,7 @@ static int s51xx_pcie_probe(struct pci_dev *pdev,
 	val &= PCI_BASE_ADDRESS_MEM_MASK;
 	s51xx_pcie->dbaddr_offset = db_addr - val;
 	dev_info(dev, "db_addr : 0x%x , val : 0x%x, offset : 0x%x\n",
-			db_addr, val, (unsigned int)s51xx_pcie->dbaddr_offset);
+		db_addr, val, (unsigned int)s51xx_pcie->dbaddr_offset);
 
 	pr_err("Disable BAR resources.\n");
 	for (i = 0; i < 6; i++) {
@@ -462,17 +465,17 @@ static int s51xx_pcie_probe(struct pci_dev *pdev,
 	dev_info(&bus_self->dev, "[%s] BAR %d: tmp rsc : %pR\n", __func__, resno, tmp_rsc);
 	s51xx_pcie->dbaddr_base = tmp_rsc->start;
 
-	pr_err("Set Doorbell register address.\n");
+	pr_err("Set Doorbell register addres.\n");
 	s51xx_pcie->doorbell_addr = devm_ioremap(&pdev->dev,
-			s51xx_pcie->dbaddr_base + s51xx_pcie->dbaddr_offset, SZ_4);
+				s51xx_pcie->dbaddr_base + s51xx_pcie->dbaddr_offset, SZ_4);
 
 	ret = abox_pci_doorbell_paddr_set(s51xx_pcie->dbaddr_base + s51xx_pcie->dbaddr_offset);
 	if (!ret)
 		dev_err(dev, "PCIe doorbell setting for ABOX is failed \n");
 
 	pr_info("s51xx_pcie.doorbell_addr = %p  (start 0x%lx offset : %lx)\n",
-		s51xx_pcie->doorbell_addr, (unsigned long)s51xx_pcie->dbaddr_base,
-					(unsigned long)s51xx_pcie->dbaddr_offset);
+		s51xx_pcie->doorbell_addr, (unsigned long int)s51xx_pcie->dbaddr_base,
+					(unsigned long int)s51xx_pcie->dbaddr_offset);
 
 	if (s51xx_pcie->doorbell_addr == NULL)
 		pr_err("Can't ioremap doorbell address!!!\n");
@@ -576,3 +579,9 @@ int s51xx_pcie_init(struct modem_ctl *mc)
 
 	return 0;
 }
+
+static void __exit s51xx_pcie_exit(void)
+{
+	pci_unregister_driver(&s51xx_driver);
+}
+module_exit(s51xx_pcie_exit);

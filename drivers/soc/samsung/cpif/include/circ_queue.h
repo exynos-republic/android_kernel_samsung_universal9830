@@ -1,10 +1,9 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/*
- * @file		circ_queue.h
- * @brief		header file for general circular queue operations
- * @date		2014/02/18
- * @author		Hankook Jang (hankook.jang@samsung.com)
- */
+/**
+@file		circ_queue.h
+@brief		header file for general circular queue operations
+@date		2014/02/18
+@author		Hankook Jang (hankook.jang@samsung.com)
+*/
 
 /*
  * Copyright (C) 2010 Samsung Electronics.
@@ -29,115 +28,128 @@
 #define GROUP_CIRC_QUEUE
 
 #ifdef GROUP_CIRC_QUEUE
-/*
- * @defgroup group_circ_queue	Circular Queue
- * @{
- */
+/**
+@defgroup group_circ_queue	Circular Queue
+@{
+*/
 
-/*
- * @brief	the structure for a circular queue in a memory-type interface
- */
+/**
+@brief		the structure for a circular queue in a memory-type interface
+*/
 struct circ_queue {
 	spinlock_t lock;
 
-	/*
+	/**
 	 * the flag and counter for checking busy status of a circualr queue
 	 */
 	atomic_t busy;
 
-	/*
+	/**
 	 * the start address of the data buffer in a circualr queue
 	 */
 	void __iomem *buff;
 
-	/*
+	/**
 	 * the size of the data buffer in a circular queue
 	 */
 	unsigned int size;
 
-	/*
+	/**
 	 * the pointer to the "HEAD (IN)" variable that contains a byte offset
 	 * from @b @@buff
 	 */
 	void __iomem *head;
 
-	/*
+	/**
 	 * the pointer to the "TAIL (OUT)" variable that contains a byte offset
 	 * from @b @@buff
 	 */
 	void __iomem *tail;
 };
 
-/*
- * @brief	get the start address of the data buffer in a circular queue
- * @param q	the pointer to a circular queue
- * @return	the start address of the data buffer in the @e @@q
- */
+/**
+@brief		get the start address of the data buffer in a circular queue
+
+@param q	the pointer to a circular queue
+
+@return		the start address of the data buffer in the @e @@q
+*/
 static inline char *get_buff(struct circ_queue *q)
 {
 	return q->buff;
 }
 
-/*
- * @brief	get the size of the data buffer in a circular queue
- * @param q	the pointer to a circular queue
- * @return	the size of the data buffer in the @e @@q
- */
+/**
+@brief		get the size of the data buffer in a circular queue
+
+@param q	the pointer to a circular queue
+
+@return		the size of the data buffer in the @e @@q
+*/
 static inline unsigned int get_size(struct circ_queue *q)
 {
 	return q->size;
 }
 
-/*
- * @brief	get the "HEAD (IN)" pointer value of a circular queue
- * @param q	the pointer to a circular queue
- * @return	the "HEAD (IN)" pointer value of the @e @@q
- */
+/**
+@brief		get the "HEAD (IN)" pointer value of a circular queue
+
+@param q	the pointer to a circular queue
+
+@return		the "HEAD (IN)" pointer value of the @e @@q
+*/
 static inline unsigned int get_head(struct circ_queue *q)
 {
 	return ioread32(q->head);
 }
 
-/*
- * @brief	set the "HEAD (IN)" pointer value of a circular queue with @b
- *		@@in
- * @param q	the pointer to a circular queue
- * @param in	the value to be stored into the "HEAD (IN)" pointer
- */
+/**
+@brief		set the "HEAD (IN)" pointer value of a circular queue with @b
+		@@in
+
+@param q	the pointer to a circular queue
+@param in	the value to be stored into the "HEAD (IN)" pointer
+*/
 static inline void set_head(struct circ_queue *q, unsigned int in)
 {
 	iowrite32(in, q->head);
 }
 
-/*
- * @brief	get the "TAIL (OUT)" pointer value of a circular queue
- * @param q	the pointer to a circular queue
- * @return	the "TAIL (OUT)" pointer value of the @e @@q
- */
+/**
+@brief		get the "TAIL (OUT)" pointer value of a circular queue
+
+@param q	the pointer to a circular queue
+
+@return		the "TAIL (OUT)" pointer value of the @e @@q
+*/
 static inline unsigned int get_tail(struct circ_queue *q)
 {
 	return ioread32(q->tail);
 }
 
-/*
- * @brief	set the "TAIL (OUT)" pointer value of a circular queue with @e
- *		@@out
- * @param q	the pointer to a circular queue
- * @param out	the value to be stored into the "TAIL (OUT)" pointer
- */
+/**
+@brief		set the "TAIL (OUT)" pointer value of a circular queue with @e
+		@@out
+
+@param q	the pointer to a circular queue
+@param out	the value to be stored into the "TAIL (OUT)" pointer
+*/
 static inline void set_tail(struct circ_queue *q, unsigned int out)
 {
 	iowrite32(out, q->tail);
 }
 
-/*
- * @brief		check whether or not both "IN" and "OUT" pointer values are valid
- * @param qsize		the size of the data buffer in a circular queue
- * @param in		the value of the "HEAD (IN)" pointer
- * @param out		the value of the "TAIL (OUT)" pointer
- * @retval "true"	if all pointer values are valid
- * @retval "false"	if either IN or OUT pointer value is NOT valid
- */
+/**
+@brief		check whether or not both "IN" and "OUT" pointer values are
+		valid
+
+@param qsize	the size of the data buffer in a circular queue
+@param in	the value of the "HEAD (IN)" pointer
+@param out	the value of the "TAIL (OUT)" pointer
+
+@retval "true"	if all pointer values are valid
+@retval "false"	if either IN or OUT pointer value is NOT valid
+*/
 static inline bool circ_valid(unsigned int qsize,
 			      unsigned int in,
 			      unsigned int out)
@@ -151,25 +163,29 @@ static inline bool circ_valid(unsigned int qsize,
 	return true;
 }
 
-/*
- * @brief		check whether or not a circular queue is empty
- * @param in		the value of the "HEAD (IN)" pointer
- * @param out		the value of the "TAIL (OUT)" pointer
- * @retval "true"	if a circular queue is empty
- * @retval "false"	if a circular queue is NOT empty
- */
+/**
+@brief		check whether or not a circular queue is empty
+
+@param in	the value of the "HEAD (IN)" pointer
+@param out	the value of the "TAIL (OUT)" pointer
+
+@retval "true"	if a circular queue is empty
+@retval "false"	if a circular queue is NOT empty
+*/
 static inline bool circ_empty(unsigned int in, unsigned int out)
 {
 	return (in == out);
 }
 
-/*
- * @brief		get the size of free space in a circular queue
- * @param qsize		the size of the data buffer in a circular queue
- * @param in		the value of the "HEAD (IN)" pointer
- * @param out		the value of the "TAIL (OUT)" pointer
- * @return		the size of free space in a circular queue
- */
+/**
+@brief		get the size of free space in a circular queue
+
+@param qsize	the size of the data buffer in a circular queue
+@param in	the value of the "HEAD (IN)" pointer
+@param out	the value of the "TAIL (OUT)" pointer
+
+@return		the size of free space in a circular queue
+*/
 static inline unsigned int circ_get_space(unsigned int qsize,
 					  unsigned int in,
 					  unsigned int out)
@@ -183,13 +199,15 @@ static inline bool circ_full(unsigned int qsize, unsigned int in,
 	return (circ_get_space(qsize, in, out) == 0);
 }
 
-/*
- * @brief		get the size of data in a circular queue
- * @param qsize		the size of the data buffer in a circular queue
- * @param in		the value of the "HEAD (IN)" pointer
- * @param out		the value of the "TAIL (OUT)" pointer
- * @return		the size of data in a circular queue
- */
+/**
+@brief		get the size of data in a circular queue
+
+@param qsize	the size of the data buffer in a circular queue
+@param in the	value of the "HEAD (IN)" pointer
+@param out the	value of the "TAIL (OUT)" pointer
+
+@return		the size of data in a circular queue
+*/
 static inline unsigned int circ_get_usage(unsigned int qsize,
 					  unsigned int in,
 					  unsigned int out)
@@ -197,51 +215,36 @@ static inline unsigned int circ_get_usage(unsigned int qsize,
 	return (in >= out) ? (in - out) : (qsize - out + in);
 }
 
-/*
- * @brief		calculate a new pointer value for a circular queue
- * @param qsize		the size of the data buffer in a circular queue
- * @param p		the old value of a queue pointer
- * @param len		the length to be added to the @e @@p pointer value
- * @return		the new value for the queue pointer
- */
+/**
+@brief		calculate a new pointer value for a circular queue
+
+@param qsize	the size of the data buffer in a circular queue
+@param p	the old value of a queue pointer
+@param len	the length to be added to the @e @@p pointer value
+
+@return		the new value for the queue pointer
+*/
 static inline unsigned int circ_new_ptr(unsigned int qsize,
 					unsigned int p,
 					unsigned int len)
 {
 	unsigned int np = (p + len);
-
 	while (np >= qsize)
 		np -= qsize;
 	return np;
 }
 
-/*
- * @brief		calculate a previous pointer value for a circular queue
- * @param qsize		the size of the data buffer in a circular queue
- * @param p		the old value of a queue pointer
- * @param len		the length to be prior to the @e @@p pointer value
- * @return		the new value for the queue pointer
- */
-static inline unsigned int circ_prev_ptr(unsigned int qsize,
-					unsigned int p,
-					unsigned int len)
-{
-	int np = ((int)p - len);
+/**
+@brief		copy the data in a circular queue to a local buffer
 
-	while (np < 0)
-		np += qsize;
-	return (unsigned int)np;
-}
+@param dst	the start address of the local buffer
+@param src	the start address of the data buffer in a circular queue
+@param qsize	the size of the data buffer in a circular queue
+@param out	the offset in the data buffer to be read
+@param len	the length of data to be read
 
-/*
- * @brief		copy the data in a circular queue to a local buffer
- * @param dst		the start address of the local buffer
- * @param src		the start address of the data buffer in a circular queue
- * @param qsize		the size of the data buffer in a circular queue
- * @param out		the offset in the data buffer to be read
- * @param len		the length of data to be read
- * @remark		This function should be invoked after checking the data length.
- */
+@remark		This function should be invoked after checking the data length.
+*/
 static inline void circ_read(u8 *dst, u8 *src, unsigned int qsize,
 			     unsigned int out, unsigned int len)
 {
@@ -264,15 +267,17 @@ static inline void circ_read(u8 *dst, u8 *src, unsigned int qsize,
 	}
 }
 
-/*
- * @brief		copy the data in a local buffer to a circular queue
- * @param dst		the start address of the data buffer in a circular queue
- * @param src		the start address of the data in a local buffer
- * @param qsize		the size of the data buffer in a circular queue
- * @param in		the offset in the data buffer for the data to be stored
- * @param len		the length of data to be stored
- * @remark		This function should be invoked after checking the free space.
- */
+/**
+@brief		copy the data in a local buffer to a circular queue
+
+@param dst	the start address of the data buffer in a circular queue
+@param src	the start address of the data in a local buffer
+@param qsize	the size of the data buffer in a circular queue
+@param in	the offset in the data buffer for the data to be stored
+@param len	the length of data to be stored
+
+@remark		This function should be invoked after checking the free space.
+*/
 static inline void circ_write(u8 *dst, u8 *src, unsigned int qsize,
 			      unsigned int in, unsigned int len)
 {
@@ -296,10 +301,10 @@ static inline void circ_write(u8 *dst, u8 *src, unsigned int qsize,
 	}
 }
 
-/*
- * End of GROUP_CIRC_QUEUE
- * @}
- */
+/**
+// End of group_circ_queue
+@}
+*/
 #endif
 
 #endif

@@ -1,6 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2014-2020, Samsung Electronics.
+ * Copyright (C) 2014-2019, Samsung Electronics.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -16,8 +15,6 @@
 #ifndef __MCU_IPC_PRIV_H__
 #define __MCU_IPC_PRIV_H__
 
-#include <dt-bindings/soc/samsung/exynos-cpif.h>
-
 /* Registers */
 #define EXYNOS_MCU_IPC_MCUCTLR			0x0
 #define EXYNOS_MCU_IPC_INTGR0			0x8
@@ -25,85 +22,80 @@
 #define EXYNOS_MCU_IPC_INTMR0			0x10
 #define EXYNOS_MCU_IPC_INTSR0			0x14
 #define EXYNOS_MCU_IPC_INTMSR0			0x18
+#define EXYNOS_MCU_IPC_INTGR1			0x1c
+#define EXYNOS_MCU_IPC_INTCR1			0x20
+#define EXYNOS_MCU_IPC_INTMR1			0x24
+#define EXYNOS_MCU_IPC_INTSR1			0x28
+#define EXYNOS_MCU_IPC_INTMSR1			0x2c
+#define EXYNOS_MCU_IPC_ISSR0			0x80
+#define EXYNOS_MCU_IPC_ISSR1			0x84
+#define EXYNOS_MCU_IPC_ISSR2			0x88
+#define EXYNOS_MCU_IPC_ISSR3			0x8c
 
 /* Bits definition */
 #define MCU_IPC_MCUCTLR_MSWRST	(0)
 
-/* */
-#define MAX_CP_MBOX_HANDLER		16
-struct cp_mbox_handler {
+#define MCU_IPC_RX_INT0		(1 << 16)
+#define MCU_IPC_RX_INT1		(1 << 17)
+#define MCU_IPC_RX_INT2		(1 << 18)
+#define MCU_IPC_RX_INT3		(1 << 19)
+#define MCU_IPC_RX_INT4		(1 << 20)
+#define MCU_IPC_RX_INT5		(1 << 21)
+#define MCU_IPC_RX_INT6		(1 << 22)
+#define MCU_IPC_RX_INT7		(1 << 23)
+#define MCU_IPC_RX_INT8		(1 << 24)
+#define MCU_IPC_RX_INT9		(1 << 25)
+#define MCU_IPC_RX_INT10	(1 << 26)
+#define MCU_IPC_RX_INT11	(1 << 27)
+#define MCU_IPC_RX_INT12	(1 << 28)
+#define MCU_IPC_RX_INT13	(1 << 29)
+#define MCU_IPC_RX_INT14	(1 << 30)
+#define MCU_IPC_RX_INT15	(1 << 31)
+
+struct mcu_ipc_ipc_handler {
 	void *data;
 	irq_handler_t handler;
 };
 
-struct cp_mbox_irq_sfr {
-	u32 gr;
-	u32 cr;
-	u32 mr;
-	u32 sr;
-	u32 msr;
-	u32 mask;
-	u32 shift;
-};
-
-struct cp_mbox_irq_data {
+struct mcu_ipc_drv_data {
 	char *name;
-	u32 idx;
-	bool enable;
+	u32 id;
 
-	struct cp_mbox_irq_sfr sfr_rx;
-	struct cp_mbox_irq_sfr sfr_tx;
-
-	int irq;
-	int affinity;
+	void __iomem *ioaddr;
 	u32 registered_irq;
 	unsigned long unmasked_irq;
 
-	struct cp_mbox_handler hd[MAX_CP_MBOX_HANDLER];
-
-#if IS_ENABLED(CONFIG_ARGOS)
 	/**
 	 * irq affinity cpu mask
 	 */
 	cpumask_var_t dmask;	/* default cpu mask */
 	cpumask_var_t imask;	/* irq affinity cpu mask */
-#endif
-};
 
-struct cp_mbox_drv_data {
-	void __iomem *ioaddr;
-
-	struct device *dev;
-
-	u32 num_shared_reg;
-	u32 shared_reg_offset;
-	bool use_sw_reset_reg;
-
-	struct cp_mbox_irq_data irq_data[MAX_CP_MBOX_IRQ_IDX];
-
+	struct device *mcu_ipc_dev;
+	struct mcu_ipc_ipc_handler hd[16];
+	spinlock_t lock;
 	spinlock_t reg_lock;
 
 	int irq;
 };
 
-/* */
-static struct cp_mbox_drv_data mbox_data;
+static struct mcu_ipc_drv_data mcu_dat[MCU_MAX];
 
-static inline void mcu_ipc_write(u32 val, u32 reg)
+static inline void mcu_ipc_writel(enum mcu_ipc_region id, u32 val, long reg)
 {
-	writel(val, mbox_data.ioaddr + reg);
+	writel(val, mcu_dat[id].ioaddr + reg);
 }
 
-static inline u32 mcu_ipc_read(u32 reg)
+static inline u32 mcu_ipc_readl(enum mcu_ipc_region id, long reg)
 {
-	return readl(mbox_data.ioaddr + reg);
+	return readl(mcu_dat[id].ioaddr + reg);
 }
 
-#if IS_ENABLED(CONFIG_ARGOS)
+#ifdef CONFIG_ARGOS
 /* kernel team needs to provide argos header file. !!!
  * As of now, there's nothing to use.
  */
-#if IS_ENABLED(CONFIG_SCHED_HMP)
+#ifdef CONFIG_SCHED_HMP
 extern struct cpumask hmp_slow_cpu_mask;
 extern struct cpumask hmp_fast_cpu_mask;
 
@@ -117,6 +109,11 @@ static inline struct cpumask *get_default_cpu_mask(void)
 	return cpu_all_mask;
 }
 #endif
+
+struct mcu_argos_info {
+	int irq;
+	u32 affinity;
+};
 
 int argos_irq_affinity_setup_label(unsigned int irq, const char *label,
 		struct cpumask *affinity_cpu_mask,

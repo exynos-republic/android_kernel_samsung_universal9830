@@ -113,13 +113,11 @@ do {							\
 	(flag) = t_flag;				\
 } while(0)
 
-#define REGULATOR_INFO_ID	3
+#define REGULATOR_INFO_ID	8
 
 extern void acpm_log_print(void);
 extern void timestamp_write(void);
 extern void acpm_ramdump(void);
 extern void acpm_fw_log_level(unsigned int on);
 
-extern int acpm_ipc_remove(struct platform_device *pdev);
-extern int acpm_ipc_probe(struct platform_device *pdev);
 #endif

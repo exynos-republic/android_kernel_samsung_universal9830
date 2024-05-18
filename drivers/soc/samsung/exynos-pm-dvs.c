@@ -25,7 +25,6 @@ static LIST_HEAD(regulator_list);
 static int exynos_pm_dvs_probe(struct platform_device *pdev)
 {
 	struct device_node *np = NULL;
-	int old_volt;
 	int ret = 0;
 
 	for_each_child_of_node(pdev->dev.of_node, np) {
@@ -74,18 +73,19 @@ static int exynos_pm_dvs_probe(struct platform_device *pdev)
 			return -EINVAL;
 		}
 
-		list_add_tail(&di->node, &regulator_list);
-
-		old_volt = regulator_get_voltage(di->regulator);
-		if (di->init_volt != old_volt) {
-			dev_info(&pdev->dev, "%s: init_volt from %d to %d\n",
-				 di->id, old_volt, di->init_volt);
-			ret = regulator_set_voltage(di->regulator, di->init_volt, di->init_volt + di->volt_range);
-			if (ret) {
-				dev_err(&pdev->dev, "%s	failed to regulator set_voltage ", di->id);
-				break;
-			}
+#ifdef CONFIG_SEC_PM
+		dev_info(&pdev->dev, "%s: init_volt %d\n", di->id, di->init_volt);
+		ret = regulator_set_voltage(di->regulator, di->init_volt,
+				di->init_volt + di->volt_range);
+		if (ret) {
+			dev_err(&pdev->dev, "%s: failed to set voltage\n",
+					di->id);
+			kfree(di);
+			return ret;
 		}
+#endif /* CONFIG_SEC_PM */
+
+		list_add_tail(&di->node, &regulator_list);
 	}
 
 	dev_info(&pdev->dev, "driver probe success!");
@@ -145,13 +145,13 @@ static const struct dev_pm_ops exynos_pm_dvs_pm = {
 };
 #endif
 
-static const struct of_device_id of_exynos_pm_dvs_match[] = {
+static const struct of_device_id exynos_pm_dvs_match[] = {
 	{
 		.compatible = "samsung,exynos-pm-dvs",
 	},
 	{},
 };
-MODULE_DEVICE_TABLE(of, of_exynos_pm_dvs_match);
+MODULE_DEVICE_TABLE(of, exynos_pm_dvs);
 
 static struct platform_device_id exynos_pm_dvs_driver_ids[] = {
 	{
@@ -159,25 +159,24 @@ static struct platform_device_id exynos_pm_dvs_driver_ids[] = {
 	},
 	{},
 };
+MODULE_DEVICE_TABLE(platform, exynos_pm_dvs_driver_ids);
+
 
 static struct platform_driver exynos_pm_dvs_driver = {
 	.driver	= {
 		.name	= EXYNOS_PM_DVS_MODULE_NAME,
-		.of_match_table = of_exynos_pm_dvs_match,
 		.owner	= THIS_MODULE,
+#ifdef CONFIG_PM
 		.pm	= &exynos_pm_dvs_pm,
+#endif
+		.of_match_table = of_match_ptr(exynos_pm_dvs_match),
 	},
 	.probe	= exynos_pm_dvs_probe,
 	.remove	= exynos_pm_dvs_remove,
 	.id_table = exynos_pm_dvs_driver_ids,
 };
 
-static int exynos_pm_dvs_init(void)
-{
-	return platform_driver_register(&exynos_pm_dvs_driver);
-}
-late_initcall(exynos_pm_dvs_init);
+module_platform_driver(exynos_pm_dvs_driver);
 
 MODULE_DESCRIPTION("Samsung soc series dynamic voltage control driver");
-MODULE_SOFTDEP("pre: acpm-mfd-bus");
 MODULE_LICENSE("GPL");

@@ -13,22 +13,9 @@
 #include <linux/netlink.h>
 #include <linux/skbuff.h>
 #include <linux/delay.h>
-#include <linux/module.h>
 #include "../exynos-hdcp2-log.h"
 #include "exynos-hdcp2-dplink-reg.h"
 #include "exynos-hdcp2-dplink-if.h"
-
-#if defined(CONFIG_EXYNOS_DISPLAYPORT)
-void (*pdisplayport_hdcp22_enable)(u32 en);
-int (*pdisplayport_dpcd_read_for_hdcp22)(u32 address, u32 length, u8 *data);
-int (*pdisplayport_dpcd_write_for_hdcp22)(u32 address, u32 length, u8 *data);
-void displayport_register_func(void (*func0)(u32 en), int (*func1)(u32 address, u32 length, u8 *data), int (*func2)(u32 address, u32 length, u8 *data));
-#else
-void pdisplayport_hdcp22_enable(u32 en);
-int pdisplayport_dpcd_read_for_hdcp22(u32 address, u32 length, u8 *data);
-int pdisplayport_dpcd_write_for_hdcp22(u32 address, u32 length, u8 *data);
-#endif
-
 
 #if defined(CONFIG_HDCP2_EMULATION_MODE)
 #define NETLINK_HDCP 31
@@ -165,6 +152,26 @@ uint32_t dpcd_addr[NUM_HDCP22_MSG_NAME] = {
 	DPCD_ADDR_HDCP22_Type,
 };
 
+#if defined(CONFIG_EXYNOS_DISPLAYPORT)
+extern int displayport_dpcd_read_for_hdcp22(u32 address, u32 length, u8 *data);
+extern int displayport_dpcd_write_for_hdcp22(u32 address, u32 length, u8 *data);
+extern void displayport_hdcp22_enable(u32 en);
+
+#else
+int displayport_dpcd_read_for_hdcp22(u32 address, u32 length, u8 *data)
+{
+	return 0;
+}
+int displayport_dpcd_write_for_hdcp22(u32 address, u32 length, u8 *data)
+{
+	return 0;
+}
+void displayport_hdcp22_enable(u32 en)
+{
+	return;
+}
+#endif
+
 int hdcp_dplink_init(void)
 {
 	/* todo */
@@ -173,7 +180,7 @@ int hdcp_dplink_init(void)
 
 void hdcp_dplink_config(int en)
 {
-	pdisplayport_hdcp22_enable(en);
+	displayport_hdcp22_enable(en);
 }
 
 int hdcp_dplink_is_enabled_hdcp22(void)
@@ -201,7 +208,7 @@ int hdcp_dplink_recv(uint32_t msg_name, uint8_t *data, uint32_t size)
 
 	if (size > DPCD_PACKET_SIZE) {
 		for (i = 0; i < (size / DPCD_PACKET_SIZE); i++) {
-			ret = pdisplayport_dpcd_read_for_hdcp22(
+			ret = displayport_dpcd_read_for_hdcp22(
 				dpcd_addr[msg_name] + i * DPCD_PACKET_SIZE,
 				DPCD_PACKET_SIZE,
 				&data[i * DPCD_PACKET_SIZE]);
@@ -213,7 +220,7 @@ int hdcp_dplink_recv(uint32_t msg_name, uint8_t *data, uint32_t size)
 
 		remain = size % DPCD_PACKET_SIZE;
 		if (remain) {
-			ret = pdisplayport_dpcd_read_for_hdcp22(
+			ret = displayport_dpcd_read_for_hdcp22(
 				dpcd_addr[msg_name] + i * DPCD_PACKET_SIZE,
 				remain,
 				&data[i * DPCD_PACKET_SIZE]);
@@ -224,7 +231,7 @@ int hdcp_dplink_recv(uint32_t msg_name, uint8_t *data, uint32_t size)
 		}
 		return 0;
 	} else
-		return pdisplayport_dpcd_read_for_hdcp22(dpcd_addr[msg_name], size, data);
+		return displayport_dpcd_read_for_hdcp22(dpcd_addr[msg_name], size, data);
 }
 
 int hdcp_dplink_send(uint32_t msg_name, uint8_t *data, uint32_t size)
@@ -234,7 +241,7 @@ int hdcp_dplink_send(uint32_t msg_name, uint8_t *data, uint32_t size)
 
 	if (size > DPCD_PACKET_SIZE) {
 		for (i = 0; i < (size / DPCD_PACKET_SIZE); i++) {
-			ret = pdisplayport_dpcd_write_for_hdcp22(
+			ret = displayport_dpcd_write_for_hdcp22(
 				dpcd_addr[msg_name] + i * DPCD_PACKET_SIZE,
 				DPCD_PACKET_SIZE,
 				&data[i * DPCD_PACKET_SIZE]);
@@ -246,31 +253,6 @@ int hdcp_dplink_send(uint32_t msg_name, uint8_t *data, uint32_t size)
 		return 0;
 	}
 	else
-		return pdisplayport_dpcd_write_for_hdcp22(dpcd_addr[msg_name], size, data);
+		return displayport_dpcd_write_for_hdcp22(dpcd_addr[msg_name], size, data);
 }
 #endif
-
-#if defined(CONFIG_EXYNOS_DISPLAYPORT)
-void displayport_register_func(void (*func0)(u32 en), int (*func1)(u32 address, u32 length, u8 *data), int (*func2)(u32 address, u32 length, u8 *data))
-{
-	pdisplayport_hdcp22_enable = func0;
-	pdisplayport_dpcd_read_for_hdcp22 = func1;
-	pdisplayport_dpcd_write_for_hdcp22 = func2;
-}
-EXPORT_SYMBOL_GPL(displayport_register_func);
-#else
-int pdisplayport_dpcd_read_for_hdcp22(u32 address, u32 length, u8 *data)
-{
-       return 0;
-}
-int pdisplayport_dpcd_write_for_hdcp22(u32 address, u32 length, u8 *data)
-{
-       return 0;
-}
-void pdisplayport_hdcp22_enable(u32 en)
-{
-       return;
-}
-#endif
-
-MODULE_LICENSE("GPL");

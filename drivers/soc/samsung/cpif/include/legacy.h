@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __BOOT_H__
 #define __BOOT_H__
 
@@ -8,23 +7,42 @@
 #include <linux/netdevice.h>
 
 #include "circ_queue.h"
+#include "link_device_memory_config.h"
 #include "sipc5.h"
 
-#if IS_ENABLED(CONFIG_LINK_DEVICE_PCIE)
+#ifdef GROUP_MEM_TYPE_SHMEM
+
+#ifdef CONFIG_LINK_DEVICE_PCIE
 #define DOORBELL_INT_ADD		0x10000
 #define MODEM_INT_NUM			16
+#endif /* end of CONFIG_LINK_DEVICE_PCIE */
+
+#if defined(CONFIG_SEC_MODEM_S5000AP) && defined(CONFIG_SEC_MODEM_S5100)
+#define RMNET_COUNT 8
+#define SHM_2CP_UL_PATH_CTL_MAGIC	0x4B5B
+
+struct __packed shmem_ulpath_ctl {
+	u32 status;
+	u32 path;
+};
+
+struct __packed shmem_ulpath_table {
+	u32 magic;
+	struct shmem_ulpath_ctl ctl[RMNET_COUNT];
+};
 #endif
 
-#define BAD_MSG_BUFFER_SIZE 32
+#endif /* end of GROUP_MEM_TYPE_SHMEM */
 
 enum legacy_ipc_map {
 	IPC_MAP_FMT = 0,
-#if IS_ENABLED(CONFIG_MODEM_IF_LEGACY_QOS)
+#ifdef CONFIG_MODEM_IF_LEGACY_QOS
 	IPC_MAP_HPRIO_RAW,
 #endif
 	IPC_MAP_NORM_RAW,
 	MAX_SIPC_MAP,
 };
+
 
 struct legacy_ipc_device {
 	enum legacy_ipc_map id;
@@ -59,12 +77,26 @@ struct legacy_link_device {
 
 };
 
+static inline enum legacy_ipc_map get_mmap_idx(enum sipc_ch_id ch,
+		struct sk_buff *skb)
+{
+	if (sipc5_fmt_ch(ch))
+		return IPC_MAP_FMT;
+#ifdef CONFIG_MODEM_IF_LEGACY_QOS
+	return (skb->queue_mapping == 1) ?
+		IPC_MAP_HPRIO_RAW : IPC_MAP_NORM_RAW;
+#else
+	return IPC_MAP_NORM_RAW;
+#endif
+}
+
 int create_legacy_link_device(struct mem_link_device *mld);
 int init_legacy_link(struct legacy_link_device *bl);
-int xmit_to_legacy_link(struct mem_link_device *mld, u8 ch,
+int xmit_to_legacy_link(struct mem_link_device *mld, enum sipc_ch_id ch,
 		struct sk_buff *skb, enum legacy_ipc_map legacy_buffer_index);
 struct sk_buff *recv_from_legacy_link(struct mem_link_device *mld,
 		struct legacy_ipc_device *dev, unsigned int in, int *ret);
 bool check_legacy_tx_pending(struct mem_link_device *mld);
 
 #endif /* end of __BOOT_H__ */
+

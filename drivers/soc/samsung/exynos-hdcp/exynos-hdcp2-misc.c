@@ -10,7 +10,6 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/module.h>
 
 void hdcp_hexdump(uint8_t *buf, size_t len)
 {
@@ -23,5 +22,3 @@ void hdcp_hexdump(uint8_t *buf, size_t len)
 	}
 	printk(KERN_ERR "\n");
 }
-
-MODULE_LICENSE("GPL");

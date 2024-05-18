@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2018 Samsung Electronics.
  *
@@ -157,93 +156,6 @@ static void reset_zerocopy(struct link_device *ld)
 	mif_err("---\n");
 }
 
-/* sysfs */
-static ssize_t zmc_count_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	struct modem_data *modem;
-
-	modem = (struct modem_data *)dev->platform_data;
-
-	return scnprintf(buf, PAGE_SIZE, "memcpy_packet(%d)/zeromemcpy_packet(%d)\n",
-			modem->mld->memcpy_packet_count, modem->mld->zeromemcpy_packet_count);
-}
-
-static ssize_t zmc_count_store(struct device *dev,
-		struct device_attribute *attr,
-		const char *buf, size_t count)
-{
-	struct modem_data *modem;
-	unsigned int val = 0;
-	int ret;
-
-	modem = (struct modem_data *)dev->platform_data;
-	ret = kstrtouint(buf, 0, &val);
-
-	if (val == 0) {
-		modem->mld->memcpy_packet_count = 0;
-		modem->mld->zeromemcpy_packet_count = 0;
-	}
-
-	return count;
-}
-
-/* sysfs */
-static ssize_t mif_buff_mng_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	if (!g_mif_buff_mng)
-		return 0;
-
-	return scnprintf(buf, PAGE_SIZE, "used(%d)/free(%d)/total(%d)\n",
-			g_mif_buff_mng->used_cell_count, g_mif_buff_mng->free_cell_count,
-			g_mif_buff_mng->cell_count);
-}
-
-static ssize_t force_use_memcpy_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	struct modem_data *modem;
-
-	modem = (struct modem_data *)dev->platform_data;
-	return scnprintf(buf, PAGE_SIZE, "%d\n", modem->mld->force_use_memcpy);
-}
-
-static ssize_t force_use_memcpy_store(struct device *dev,
-		struct device_attribute *attr,
-		const char *buf, size_t count)
-{
-	struct modem_data *modem;
-	unsigned int val = 0;
-	int ret;
-
-	modem = (struct modem_data *)dev->platform_data;
-	ret = kstrtouint(buf, 0, &val);
-
-	if (val == 0)
-		modem->mld->force_use_memcpy = 0;
-	else if (val == 1)
-		modem->mld->force_use_memcpy = 1;
-	return count;
-}
-
-static DEVICE_ATTR_RO(mif_buff_mng);
-static DEVICE_ATTR_RW(zmc_count);
-static DEVICE_ATTR_RW(force_use_memcpy);
-
-static struct attribute *zerocopy_attrs[] = {
-	&dev_attr_mif_buff_mng.attr,
-	&dev_attr_zmc_count.attr,
-	&dev_attr_force_use_memcpy.attr,
-	NULL,
-};
-
-const struct attribute_group zerocopy_group = {
-	.attrs = zerocopy_attrs,
-	.name = "zerocopy",
-};
-
-/* Init */
 int setup_zerocopy_adaptor(struct sbd_ipc_device *ipc_dev)
 {
 	struct zerocopy_adaptor *zdptr;
@@ -286,8 +198,7 @@ int setup_zerocopy_adaptor(struct sbd_ipc_device *ipc_dev)
 					cp_shmem_get_size(cp_num, SHMEM_ZMC),
 					MIF_BUFF_DEFAULT_CELL_SIZE);
 		g_mif_buff_mng = ld->mif_buff_mng;
-		mif_info("g_mif_buff_mng:0x%pK size:0x%08x\n",
-				g_mif_buff_mng, cp_shmem_get_size(cp_num, SHMEM_ZMC));
+		mif_info("g_mif_buff_mng:0x%pK size:0x%08x\n", g_mif_buff_mng, cp_shmem_get_size(cp_num, SHMEM_ZMC));
 	}
 
 	zdptr = ipc_dev->zdptr;
@@ -338,8 +249,6 @@ static inline void set_skb_priv_zerocopy_adaptor(struct sbd_ring_buffer *rb, str
 {
 	struct zerocopy_adaptor *zdptr = rb->zdptr;
 	unsigned int out = zdptr->pre_rp;
-	struct link_device *ld = rb->ld;
-	struct mem_link_device *mld = ld_to_mem_link_device(ld);
 
 	/* Record the IO device, the link device, etc. into &skb->cb */
 	if (sipc_ps_ch(rb->ch)) {
@@ -348,12 +257,10 @@ static inline void set_skb_priv_zerocopy_adaptor(struct sbd_ring_buffer *rb, str
 		skbpriv(skb)->iod = link_get_iod_with_channel(rb->ld, ch);
 		skbpriv(skb)->ld = rb->ld;
 		skbpriv(skb)->sipc_ch = ch;
-		skbpriv(skb)->napi = &mld->mld_napi;
 	} else {
 		skbpriv(skb)->iod = rb->iod;
 		skbpriv(skb)->ld = rb->ld;
 		skbpriv(skb)->sipc_ch = rb->ch;
-		skbpriv(skb)->napi = NULL;
 	}
 }
 
@@ -361,14 +268,13 @@ struct sk_buff *zerocopy_alloc_skb(u8 *buf, unsigned int data_len)
 {
 	struct sk_buff *skb;
 
-	skb = build_skb(buf, SKB_DATA_ALIGN(data_len + NET_HEADROOM)
+	skb = __build_skb(buf, SKB_DATA_ALIGN(data_len + NET_HEADROOM)
 			+ SKB_DATA_ALIGN(sizeof(struct skb_shared_info)));
 
 	if (unlikely(!skb)) {
 		mif_err("skb is null\n");
 		return NULL;
 	}
-	skb->head_frag = 0;
 
 	skb_reserve(skb, NET_HEADROOM);
 	skb_put(skb, data_len);
@@ -449,7 +355,7 @@ static u64 buffer_to_data_offset(u8 *buf, struct sbd_ring_buffer *rb)
 	if (buf >= v_zmb && buf < (v_zmb + zmb_size)) {
 		offset = data - v_zmb + sl->zmb_offset;
 	} else {
-		mif_err("unexpected buff address : %lx\n", (unsigned long)virt_to_phys(buf));
+		mif_err("unexpected buff address : %lx\n", (unsigned long int)virt_to_phys(buf));
 		return -EINVAL;
 	}
 

@@ -22,7 +22,7 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/debugfs.h>
-#include <soc/samsung/exynos-smc.h>
+#include <linux/smc.h>
 
 #include <soc/samsung/exynos-tzasc.h>
 
@@ -51,6 +51,35 @@ static irqreturn_t exynos_tzasc_irq_handler(int irq, void *dev_id)
 				__func__, data->need_log);
 
 	return IRQ_WAKE_THREAD;
+}
+
+static void exynos_tzasc_print_fail_id(uint32_t fail_id)
+{
+	uint32_t id = (fail_id >> 11) & 0x1f;
+
+	switch (id) {
+	case 0x11:
+	case 0x12:
+	case 0x19:
+	case 0x1A:
+		pr_info("Master of FAIL_ID : G3D\n");
+		break;
+	case 0x10:
+	case 0x13:
+		pr_info("Master of FAIL_ID : DSU\n");
+		break;
+	case 0x18:
+	case 0x1B:
+		pr_info("Master of FAIL_ID : BIG_CL\n");
+		break;
+	case 0x00:
+	case 0x01:
+		pr_info("Master of FAIL_ID : PERI\n");
+		break;
+	default:
+		pr_info("Master of FAIL_ID : UNKNOWN\n");
+		break;
+	}
 }
 
 static irqreturn_t exynos_tzasc_irq_handler_thread(int irq, void *dev_id)
@@ -138,6 +167,10 @@ static irqreturn_t exynos_tzasc_irq_handler_thread(int irq, void *dev_id)
 			data->fail_info[i].tzasc_fail_ctrl);
 		pr_info("FAIL_ID : %#x\n",
 			data->fail_info[i].tzasc_fail_id);
+
+		/* print which master made this TZASC FAIL */
+		exynos_tzasc_print_fail_id(data->fail_info[i].tzasc_fail_id);
+
 		pr_info("INT_STATUS : %#x\n",
 			data->fail_info[i].tzasc_intr_stat);
 
@@ -249,11 +282,11 @@ static int exynos_tzasc_probe(struct platform_device *pdev)
 		goto out;
 	}
 
-	data->fail_info = dmam_alloc_coherent(data->dev,
+	data->fail_info = dma_zalloc_coherent(data->dev,
 						sizeof(struct tzasc_fail_info) *
 						data->ch_num,
 						&data->fail_info_pa,
-						__GFP_ZERO);
+						GFP_KERNEL);
 	if (!data->fail_info) {
 		dev_err(data->dev, "Fail to allocate memory(tzasc_fail_info)\n");
 		ret = -ENOMEM;
@@ -368,7 +401,6 @@ static const struct of_device_id exynos_tzasc_of_match_table[] = {
 	{ .compatible = "samsung,exynos-tzasc", },
 	{ },
 };
-MODULE_DEVICE_TABLE(of, exynos_tzasc_of_match_table);
 
 static struct platform_driver exynos_tzasc_driver = {
 	.probe = exynos_tzasc_probe,
@@ -390,8 +422,7 @@ static void __exit exynos_tzasc_exit(void)
 	platform_driver_unregister(&exynos_tzasc_driver);
 }
 
-//core_initcall(exynos_tzasc_init);
-module_init(exynos_tzasc_init);
+core_initcall(exynos_tzasc_init);
 module_exit(exynos_tzasc_exit);
 
 MODULE_DESCRIPTION("Exynos TrustZone Address Controller(TZASC) driver");

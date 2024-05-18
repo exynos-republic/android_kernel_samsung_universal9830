@@ -13,11 +13,10 @@
 #include <linux/uaccess.h>
 #include <linux/smc.h>
 #include <asm/cacheflush.h>
-#include <soc/samsung/exynos-smc.h>
+#include <linux/smc.h>
 #include "exynos-hdcp2-iia-auth.h"
 #include "../exynos-hdcp2-teeif.h"
 #include "exynos-hdcp2-iia-selftest.h"
-#include "../exynos-hdcp2.h"
 #include "../exynos-hdcp2-encrypt.h"
 #include "../exynos-hdcp2-log.h"
 #include "../exynos-hdcp2-session.h"
@@ -26,10 +25,10 @@
 #include "../dp_link/exynos-hdcp2-dplink-selftest.h"
 #define EXYNOS_HDCP_DEV_NAME	"hdcp2"
 
+extern struct hdcp_session_list g_hdcp_session_list;
 enum hdcp_result hdcp_link_ioc_authenticate(void);
 
 int state_init_flag;
-extern struct hdcp_session_list g_hdcp_session_list;
 
 enum hdcp_result hdcp_unwrap_key(char *wkey)
 {
@@ -245,5 +244,3 @@ enum hdcp_result hdcp_wrap_key(struct hdcp_wrapped_key *key_info)
 
 	return 0;
 }
-
-MODULE_LICENSE("GPL");

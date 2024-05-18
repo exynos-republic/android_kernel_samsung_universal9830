@@ -29,7 +29,7 @@ struct mcinfo_data {
 	u32		bit_array[2];
 };
 
-#if IS_ENABLED(CONFIG_MCINFO_SYSFS)
+#if defined(CONFIG_MCINFO_SYSFS)
 static ssize_t show_exynos_ref_rate(struct device *dev,
 			struct device_attribute *attr, char *buf)
 {
@@ -63,47 +63,23 @@ static struct attribute_group exynos_mcinfo_attr_group = {
 };
 #endif /* MCINFO_SYSFS */
 
-static int mcinfo_errcnt;
-
-static unsigned int ambient_status;
-
-void update_ambient_status(unsigned int status)
-{
-	/* 0: unknown temp 1: normal temp, 2: hot temp */
-	ambient_status = status + 1;
-}
-EXPORT_SYMBOL_GPL(update_ambient_status);
-
 static irqreturn_t exynos_mc_irq_handler(int irq, void *p)
 {
 	struct mcinfo_data *data = p;
 	unsigned int tmp;
 	int i;
-	bool hot_flag = false;
 
 	if (!data->base)
 		return IRQ_HANDLED;
-
-	mcinfo_errcnt++;
 
 	for (i = 0; i < data->basecnt; i++) {
 		tmp = __raw_readl(data->base[i])
 			<< (31 - data->bit_array[0] - data->bit_array[1])
 			>> (31 - data->bit_array[1]);
-		pr_auto(ASL5, "[SW Trip] HwTempRange#%d: 0x%x\n", i, tmp);
-		if (tmp == 0x1f)
-			hot_flag = true;
+		pr_info("[SW Trip] HwTempRange#%d: 0x%x\n", i, tmp);
 	}
 
-	if (hot_flag) {
-		/* 0: unknown temp 1: normal temp, 2: hot temp */
-		if (ambient_status != 1)
-			pr_err("[SW Trip] Memory temperature is too high (irqnum: %d)\n", irq);
-		else
-			panic("[SW Trip] Memory temperature is too high (irqnum: %d)\n", irq);
-
-		disable_irq_nosync(irq);
-	}
+	panic("[SW Trip] Memory temperature is too high (irqnum: %d)\n", irq);
 
 	return IRQ_HANDLED;
 }
@@ -116,7 +92,6 @@ unsigned int get_mcinfo_base_count(void)
 
 	return ext_data->basecnt;
 }
-EXPORT_SYMBOL_GPL(get_mcinfo_base_count);
 
 void get_refresh_rate(unsigned int *result)
 {
@@ -133,9 +108,8 @@ void get_refresh_rate(unsigned int *result)
 
 	return;
 }
-EXPORT_SYMBOL_GPL(get_refresh_rate);
 
-#if IS_ENABLED(CONFIG_OF)
+#if defined(CONFIG_OF)
 static int exynos_mcinfo_parse_dt(struct device_node *np, struct mcinfo_data *data)
 {
 	int ret = 0;
@@ -227,7 +201,7 @@ static int exynos_mcinfo_probe(struct platform_device *pdev)
 			return ret;
 	}
 
-#if IS_ENABLED(CONFIG_MCINFO_SYSFS)
+#if defined(CONFIG_MCINFO_SYSFS)
 	ret = sysfs_create_group(&data->dev->kobj,
 					&exynos_mcinfo_attr_group);
 	if (ret)
@@ -243,7 +217,7 @@ static int exynos_mcinfo_remove(struct platform_device *pdev)
 	struct mcinfo_data *data = platform_get_drvdata(pdev);
 	int i;
 
-#if IS_ENABLED(CONFIG_MCINFO_SYSFS)
+#if defined(CONFIG_MCINFO_SYSFS)
 	sysfs_remove_group(&data->dev->kobj,
 				&exynos_mcinfo_attr_group);
 #endif /* MCINFO_SYSFS */
@@ -276,7 +250,7 @@ static struct platform_driver exynos_mcinfo_driver = {
 	},
 };
 
-static int mcinfo_init(void)
+static int __init mcinfo_init(void)
 {
 	return platform_driver_probe(&exynos_mcinfo_driver, exynos_mcinfo_probe);
 }
@@ -284,4 +258,4 @@ subsys_initcall(mcinfo_init);
 
 MODULE_AUTHOR("Eunok Jo <eunok25.jo@samsung.com");
 MODULE_DESCRIPTION("Samsung EXYNOS Memory controller specific information");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPU v2");

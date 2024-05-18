@@ -538,7 +538,7 @@ static int pmucal_dbg_blk_init(struct device_node *node, u32 block_id,
 	return 0;
 }
 
-int pmucal_dbg_init(void)
+int __init pmucal_dbg_init(void)
 {
 	struct device_node *node = NULL;
 	int ret;
@@ -700,7 +700,7 @@ err_ret:
 	return 0;
 }
 
-int pmucal_dbg_debugfs_init(void)
+static int __init pmucal_dbg_debugfs_init(void)
 {
 	int i = 0;
 	struct dentry *dentry;
@@ -766,6 +766,4 @@ int pmucal_dbg_debugfs_init(void)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(pmucal_dbg_debugfs_init);
-
-MODULE_LICENSE("GPL");
+fs_initcall_sync(pmucal_dbg_debugfs_init);

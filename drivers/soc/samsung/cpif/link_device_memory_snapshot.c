@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2011 Samsung Electronics.
  *
@@ -19,6 +18,8 @@
 #include "modem_prj.h"
 #include "modem_utils.h"
 #include "link_device_memory.h"
+
+#ifdef GROUP_MEM_LINK_SNAPSHOT
 
 static struct kmem_cache *msb_kmem_cache;
 
@@ -118,7 +119,6 @@ void msb_queue_head(struct mst_buff_head *list, struct mst_buff *msb)
 static inline struct mst_buff *__msb_peek(const struct mst_buff_head *list_)
 {
 	struct mst_buff *list = ((const struct mst_buff *)list_)->next;
-
 	if (list == (struct mst_buff *)list_)
 		list = NULL;
 	return list;
@@ -167,7 +167,6 @@ struct mst_buff *msb_dequeue(struct mst_buff_head *list)
 void msb_queue_purge(struct mst_buff_head *list)
 {
 	struct mst_buff *msb;
-
 	while ((msb = msb_dequeue(list)) != NULL)
 		msb_free(msb);
 }
@@ -203,7 +202,6 @@ static void __take_mem_status(struct mem_link_device *mld, enum direction dir,
 
 	for (i = 0; i < MAX_SIPC_MAP; i++) {
 		struct legacy_ipc_device *dev = mld->legacy_link_dev.dev[i];
-
 		mst->head[i][TX] = get_txq_head(dev);
 		mst->tail[i][TX] = get_txq_tail(dev);
 		mst->head[i][RX] = get_rxq_head(dev);
@@ -236,3 +234,5 @@ struct mst_buff *mem_take_snapshot(struct mem_link_device *mld,
 
 	return msb;
 }
+
+#endif

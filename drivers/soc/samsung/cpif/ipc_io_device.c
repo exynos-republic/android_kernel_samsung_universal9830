@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2019 Samsung Electronics.
  *
@@ -36,7 +35,7 @@
 
 static int ipc_open(struct inode *inode, struct file *filp)
 {
-	struct io_device *iod = to_io_device(inode->i_cdev);
+	struct io_device *iod = to_io_device(filp->private_data);
 	struct modem_shared *msd = iod->msd;
 	struct link_device *ld;
 	int ret;
@@ -57,7 +56,7 @@ static int ipc_open(struct inode *inode, struct file *filp)
 		}
 	}
 
-	mif_info("%s (opened %d) by %s\n",
+	mif_err("%s (opened %d) by %s\n",
 		iod->name, atomic_read(&iod->opened), current->comm);
 
 	return 0;
@@ -83,7 +82,7 @@ static int ipc_release(struct inode *inode, struct file *filp)
 			ld->terminate_comm(ld, iod);
 	}
 
-	mif_info("%s (opened %d) by %s\n",
+	mif_err("%s (opened %d) by %s\n",
 		iod->name, atomic_read(&iod->opened), current->comm);
 
 	return 0;
@@ -120,9 +119,10 @@ static unsigned int ipc_poll(struct file *filp, struct poll_table_struct *wait)
 	case STATE_CRASH_RESET:
 	case STATE_NV_REBUILDING:
 	case STATE_CRASH_WATCHDOG:
-		mif_err_limited("%s: %s.state == %s\n", iod->name, mc->name, mc_state(mc));
-		if (iod->format == IPC_FMT)
+		mif_err("%s: %s.state == %s\n", iod->name, mc->name, mc_state(mc));
+		if (iod->format == IPC_FMT) {
 			return POLLHUP;
+		}
 
 		/* give delay to prevent infinite sys_poll call from
 		 * select() in APP layer without 'sleep' user call takes
@@ -275,11 +275,6 @@ static long ipc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		rmnet_type = filter_arg->cid - 1;
 
 		if (rmnet_type < RMNET_COUNT) {
-			if (filter_arg->filters_count > NUMBER_FILTERS) {
-				mif_err("Filters count out of bounds %d", filter_arg->filters_count);
-				kvfree(filter_arg);
-				return -EINVAL;
-			}
 			if (filter_arg->filters_count != 0) {
 				memcpy(&ld->packet_filter_table.rmnet[rmnet_type], filter_arg, sizeof(struct packet_filter));
 				ld->is_modern_standby = true;
@@ -347,22 +342,25 @@ static long ipc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	return 0;
 }
 
-#define INIT_END_WAIT_MS	150
 static ssize_t ipc_write(struct file *filp, const char __user *data,
 			  size_t count, loff_t *fpos)
 {
 	struct io_device *iod = (struct io_device *)filp->private_data;
 	struct link_device *ld = get_current_link(iod);
-	struct mem_link_device *mld = to_mem_link_device(ld);
 	struct modem_ctl *mc = iod->mc;
+	struct sk_buff *skb;
+	char *buff;
+	int ret;
 	u8 cfg = 0;
 	u16 cfg_sit = 0;
-	unsigned int headroom = 0;
+	unsigned int headroom;
+	unsigned int tailroom;
+	unsigned int tx_bytes;
 	unsigned int copied = 0, tot_frame = 0, copied_frm = 0;
+	unsigned int remains;
+	unsigned int alloc_size;
 	/* 64bit prevent */
 	unsigned int cnt = (unsigned int)count;
-	int curr_init_end_cnt;
-	int retry = 0;
 #ifdef DEBUG_MODEM_IF
 	struct timespec ts;
 #endif
@@ -395,39 +393,17 @@ static ssize_t ipc_write(struct file *filp, const char __user *data,
 			mif_err("protocol error %d\n", ld->protocol);
 			return -EINVAL;
 		}
+	} else {
+		cfg = 0;
+		cfg_sit = 0;
+		headroom = 0;
 	}
 
-	/* Wait for a while if a new CMD_INIT_END is sent */
-	while ((curr_init_end_cnt = atomic_read(&mld->init_end_cnt)) != mld->last_init_end_cnt &&
-	       retry++ < 3) {
-		mif_info_limited("%s: wait for INIT_END done (%dms) cnt:%d last:%d cmd:0x%02X\n",
-				 iod->name, INIT_END_WAIT_MS,
-				 curr_init_end_cnt, mld->last_init_end_cnt,
-				 mld->read_ap2cp_irq(mld));
-
-		if (atomic_inc_return(&mld->init_end_busy) > 1)
-			curr_init_end_cnt = -1;
-
-		msleep(INIT_END_WAIT_MS);
-		if (curr_init_end_cnt >= 0)
-			mld->last_init_end_cnt = curr_init_end_cnt;
-
-		atomic_dec(&mld->init_end_busy);
-	}
-
-	if (unlikely(!mld->last_init_end_cnt)) {
-		mif_err_limited("%s: INIT_END is not done\n", iod->name);
-		return -EAGAIN;
-	}
+	if (unlikely(!mc->receive_first_ipc) && ld->is_log_ch(iod->ch))
+		return -EBUSY;
 
 	while (copied < cnt) {
-		struct sk_buff *skb;
-		char *buff;
-		unsigned int remains = cnt - copied;
-		unsigned int tailroom = 0;
-		unsigned int tx_bytes;
-		unsigned int alloc_size;
-		int ret;
+		remains = cnt - copied;
 
 		switch (ld->protocol) {
 		case PROTOCOL_SIPC:
@@ -445,6 +421,8 @@ static ssize_t ipc_write(struct file *filp, const char __user *data,
 		/* Calculate tailroom for padding size */
 		if (iod->link_header && ld->aligned)
 			tailroom = ld->calc_padding_size(alloc_size);
+		else
+			tailroom = 0;
 
 		alloc_size += tailroom;
 
@@ -548,7 +526,6 @@ static ssize_t ipc_read(struct file *filp, char *buf, size_t count,
 
 	if (skb_queue_empty(rxq)) {
 		long tmo = msecs_to_jiffies(100);
-
 		wait_event_timeout(iod->wq, !skb_queue_empty(rxq), tmo);
 	}
 
@@ -568,7 +545,6 @@ static ssize_t ipc_read(struct file *filp, char *buf, size_t count,
 
 	if (iod->ch == SIPC_CH_ID_CPLOG1) {
 		struct net_device *ndev = iod->ndev;
-
 		if (!ndev) {
 			mif_err("%s: ERR! no iod->ndev\n", iod->name);
 		} else {

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2012 Samsung Electronics.
  *
@@ -21,9 +20,6 @@
 #include <linux/miscdevice.h>
 #include <linux/types.h>
 #include <linux/shm_ipc.h>
-#include <linux/ratelimit.h>
-#include <dt-bindings/soc/samsung/exynos-cpif.h>
-#include <soc/samsung/memlogger.h>
 
 #include "cp_btl.h"
 
@@ -36,12 +32,151 @@
 #define SSS_CLK_ENABLE	0
 #define SSS_CLK_DISABLE	1
 
+enum modem_t {
+	SEC_S5000AP = 0,
+	SEC_S5100 = 1,
+	DUMMY,
+	MAX_MODEM_TYPE
+};
+
+enum dev_format {
+	IPC_FMT,
+	IPC_RAW,
+	IPC_RFS,
+	IPC_MULTI_RAW,
+	IPC_BOOT,
+	IPC_DUMP,
+	IPC_CMD,
+	IPC_DEBUG,
+	MAX_DEV_FORMAT,
+};
+
+enum modem_io {
+	IODEV_BOOTDUMP,
+	IODEV_IPC,
+	IODEV_NET,
+	IODEV_DUMMY,
+};
+
+/* Caution!!
+ * Please make sure that below sequence is exactly matched with cbd.
+ * If you want one more link type, append it to the end of list.
+ */
+enum modem_link {
+	LINKDEV_SHMEM = 0,
+	LINKDEV_PCIE = 1,
+	LINKDEV_UNDEFINED,
+	LINKDEV_MAX
+};
+
+enum modem_interrupt {
+	INTERRUPT_MAILBOX = 0,
+	INTERRUPT_GPIO,
+	INTERRUPT_MAX
+};
+
+
 enum modem_network {
 	UMTS_NETWORK,
 	CDMA_NETWORK,
 	TDSCDMA_NETWORK,
 	LTE_NETWORK,
 	MAX_MODEM_NETWORK
+};
+
+enum sipc_ver {
+	NO_SIPC_VER = 0,
+	SIPC_VER_40 = 40,
+	SIPC_VER_41 = 41,
+	SIPC_VER_42 = 42,
+	SIPC_VER_50 = 50,
+	MAX_SIPC_VER
+};
+
+enum sipc_ch_id {
+	SIPC_CH_ID_RAW_0 = 0,	/*reserved*/
+	SIPC_CH_ID_CS_VT_DATA,
+	SIPC_CH_ID_CS_VT_CONTROL,
+	SIPC_CH_ID_CS_VT_AUDIO,
+	SIPC_CH_ID_CS_VT_VIDEO,
+	SIPC_CH_ID_RAW_5,	/*reserved*/
+	SIPC_CH_ID_RAW_6,	/*reserved*/
+	SIPC_CH_ID_CDMA_DATA,
+	SIPC_CH_ID_PCM_DATA,
+	SIPC_CH_ID_TRANSFER_SCREEN,
+
+	SIPC_CH_ID_PDP_0 = 10,	/*ID:10*/
+	SIPC_CH_ID_PDP_1,
+	SIPC_CH_ID_PDP_2,
+	SIPC_CH_ID_PDP_3,
+	SIPC_CH_ID_PDP_4,
+	SIPC_CH_ID_PDP_5,
+	SIPC_CH_ID_PDP_6,
+	SIPC_CH_ID_PDP_7,
+	SIPC_CH_ID_PDP_8,
+	SIPC_CH_ID_PDP_9,
+	SIPC_CH_ID_PDP_10,
+	SIPC_CH_ID_PDP_11,
+	SIPC_CH_ID_PDP_12,
+	SIPC_CH_ID_PDP_13,
+	SIPC_CH_ID_PDP_14,
+	SIPC_CH_ID_BT_DUN,	/*ID:25*/
+	SIPC_CH_ID_CIQ_DATA,
+	SIPC_CH_ID_PDP_17,	/*reserved*/
+	SIPC_CH_ID_CPLOG1,	/*ID:28*/
+	SIPC_CH_ID_CPLOG2,	/*ID:29*/
+	SIPC_CH_ID_LOOPBACK1,	/*ID:30*/
+	SIPC_CH_ID_LOOPBACK2,	/*ID:31*/
+
+	SIPC_CH_ID_CASS = 35,
+
+	/* 32 ~ 214 are reserved */
+
+	SIPC5_CH_ID_BOOT_0 = 215,
+	SIPC5_CH_ID_BOOT_1,
+	SIPC5_CH_ID_BOOT_2,
+	SIPC5_CH_ID_BOOT_3,
+	SIPC5_CH_ID_BOOT_4,
+	SIPC5_CH_ID_BOOT_5,
+	SIPC5_CH_ID_BOOT_6,
+	SIPC5_CH_ID_BOOT_7,
+	SIPC5_CH_ID_BOOT_8,
+	SIPC5_CH_ID_BOOT_9,
+
+	SIPC5_CH_ID_DUMP_0 = 225,
+	SIPC5_CH_ID_DUMP_1,
+	SIPC5_CH_ID_DUMP_2,
+	SIPC5_CH_ID_DUMP_3,
+	SIPC5_CH_ID_DUMP_4,
+	SIPC5_CH_ID_DUMP_5,
+	SIPC5_CH_ID_DUMP_6,
+	SIPC5_CH_ID_DUMP_7,
+	SIPC5_CH_ID_DUMP_8,
+	SIPC5_CH_ID_DUMP_9,
+
+	SIPC5_CH_ID_FMT_0 = 235,
+	SIPC5_CH_ID_FMT_1,
+	SIPC5_CH_ID_FMT_2,
+	SIPC5_CH_ID_FMT_3,
+	SIPC5_CH_ID_FMT_4,
+	SIPC5_CH_ID_FMT_5,
+	SIPC5_CH_ID_FMT_6,
+	SIPC5_CH_ID_FMT_7,
+	SIPC5_CH_ID_FMT_8,
+	SIPC5_CH_ID_FMT_9,
+
+	SIPC5_CH_ID_RFS_0 = 245,
+	SIPC5_CH_ID_RFS_1,
+	SIPC5_CH_ID_RFS_2,
+	SIPC5_CH_ID_RFS_3,
+	SIPC5_CH_ID_RFS_4,
+	SIPC5_CH_ID_RFS_5,
+	SIPC5_CH_ID_RFS_6,
+	SIPC5_CH_ID_RFS_7,
+	SIPC5_CH_ID_RFS_8,
+	SIPC5_CH_ID_RFS_9,
+
+	SIPC5_CH_ID_MAX = 255
 };
 
 struct __packed multi_frame_control {
@@ -75,6 +210,44 @@ enum read_write {
 #define STR_CP_FAIL	"cp_fail"
 #define STR_CP_WDT	"cp_wdt"	/* CP watchdog timer */
 
+/* You can define modem specific attribute here.
+ * It could be all the different behaviour between many modem vendor.
+ */
+enum link_attr_bit {
+	LINK_ATTR_SBD_IPC,	/* IPC over SBD (from MIPI-LLI)		*/
+	LINK_ATTR_IPC_ALIGNED,	/* IPC with 4-bytes alignment		*/
+	LINK_ATTR_IOSM_MESSAGE,	/* IOSM message				*/
+	LINK_ATTR_DPRAM_MAGIC,	/* DPRAM-style magic code validation	*/
+	/*--------------------------------------------------------------*/
+	LINK_ATTR_SBD_BOOT,	/* BOOT over SBD			*/
+	LINK_ATTR_SBD_DUMP,	/* DUMP over SBD			*/
+	LINK_ATTR_MEM_BOOT,	/* BOOT over legacy memory-type I/F	*/
+	LINK_ATTR_MEM_DUMP,	/* DUMP over legacy memory-type I/F	*/
+	LINK_ATTR_BOOT_ALIGNED,	/* BOOT with 4-bytes alignment		*/
+	LINK_ATTR_DUMP_ALIGNED,	/* DUMP with 4-bytes alignment		*/
+	/*--------------------------------------------------------------*/
+	LINK_ATTR_XMIT_BTDLR,	/* Used to download CP bootloader	*/
+	LINK_ATTR_XMIT_BTDLR_SPI, /* Download CP bootloader by SPI */
+};
+#define LINK_ATTR(b)	(0x1 << b)
+
+enum iodev_attr_bit {
+	ATTR_SIPC4,
+	ATTR_SIPC5,
+	ATTR_CDC_NCM,
+	ATTR_MULTIFMT,
+	ATTR_HANDOVER,
+	ATTR_LEGACY_RFS,
+	ATTR_RX_FRAGMENT,
+	ATTR_SBD_IPC,		/* IPC using SBD designed from MIPI-LLI	*/
+	ATTR_NO_LINK_HEADER,	/* Link-layer header is not needed	*/
+	ATTR_NO_CHECK_MAXQ,     /* no need to check rxq overflow condition */
+	ATTR_DUALSIM,		/* support Dual SIM */
+	ATTR_OPTION_REGION,	/* region & operator info */
+	ATTR_ZEROCOPY,		/* support Zerocopy : 0x1 << 12*/
+};
+#define IODEV_ATTR(b)	(0x1 << b)
+
 /**
  * struct modem_io_t - declaration for io_device
  * @name:	device name
@@ -90,12 +263,12 @@ enum read_write {
 struct modem_io_t {
 	char *name;
 	u32 ch;
-	u32 format;
-	u32 io_type;
+	enum dev_format format;
+	enum modem_io io_type;
 	u32 link_type;
 	u32 attrs;
 	char *option_region;
-#if 1/*IS_ENABLED(CONFIG_LINK_DEVICE_MEMORY_SBD)*/
+#if 1/*defined(CONFIG_LINK_DEVICE_MEMORY_SBD)*/
 	unsigned int ul_num_buffers;
 	unsigned int ul_buffer_size;
 	unsigned int dl_num_buffers;
@@ -106,17 +279,17 @@ struct modem_io_t {
 struct modemlink_pm_data {
 	char *name;
 	struct device *dev;
-	/* link power control 2 types : pin & regulator control */
-	int (*link_ldo_enable)(bool enable);
+	/* link power contol 2 types : pin & regulator control */
+	int (*link_ldo_enable)(bool);
 	unsigned int gpio_link_enable;
 	unsigned int gpio_link_active;
 	unsigned int gpio_link_hostwake;
 	unsigned int gpio_link_slavewake;
-	int (*link_reconnect)(void *reconnect);
+	int (*link_reconnect)(void);
 
 	/* usb hub only */
-	int (*port_enable)(int i, int j);
-	int (*hub_standby)(void *standby);
+	int (*port_enable)(int, int);
+	int (*hub_standby)(void *);
 	void *hub_pm_data;
 	bool has_usbhub;
 
@@ -126,7 +299,7 @@ struct modemlink_pm_data {
 	int (*freq_unlock)(struct device *dev);
 
 	int autosuspend_delay_ms; /* if zero, the default value is used */
-	void (*ehci_reg_dump)(struct device *dev);
+	void (*ehci_reg_dump)(struct device *);
 };
 
 struct modemlink_pm_link_activectl {
@@ -134,7 +307,7 @@ struct modemlink_pm_link_activectl {
 	int gpio_request_host_active;
 };
 
-#if IS_ENABLED(CONFIG_LINK_DEVICE_SHMEM) || IS_ENABLED(CONFIG_LINK_DEVICE_PCIE)
+#if defined(CONFIG_LINK_DEVICE_SHMEM) || defined(CONFIG_LINK_DEVICE_PCIE)
 enum shmem_type {
 	REAL_SHMEM,
 	C2C_SHMEM,
@@ -157,14 +330,12 @@ struct modem_mbox {
 	unsigned int int_ap2cp_wakeup;
 	unsigned int int_ap2cp_status;
 	unsigned int int_ap2cp_lcd_status;
-	unsigned int int_ap2cp_llc_status;
 	unsigned int int_ap2cp_uart_noti;
 
 	unsigned int irq_cp2ap_msg;
-	unsigned int irq_cp2ap_status;
 	unsigned int irq_cp2ap_active;
-	unsigned int irq_cp2ap_llc_status;
 	unsigned int irq_cp2ap_wakeup;
+	unsigned int irq_cp2ap_status;
 	unsigned int irq_cp2ap_wakelock;
 	unsigned int irq_cp2ap_rat_mode;
 	unsigned int irq_cp2ap_change_ul_path;
@@ -181,24 +352,21 @@ struct modem_data {
 
 	/* Modem component */
 	enum modem_network modem_net;
-	u32 modem_type;
+	enum modem_t modem_type;
 
 	u32 link_type;
 	char *link_name;
 	unsigned long link_attrs;	/* Set of link_attr_bit flags	*/
-	u32 interrupt_types;
+	enum modem_interrupt interrupt_types;
 
 	u32 protocol;
 
 	/* SIPC version */
-	u32 ipc_version;
+	enum sipc_ver ipc_version;
 
 	/* Information of IO devices */
 	unsigned int num_iodevs;
 	struct modem_io_t *iodevs;
-
-	/* capability check */
-	u32 capability_check;
 
 	/* Modem link PM support */
 	struct modemlink_pm_data *link_pm_data;
@@ -223,15 +391,12 @@ struct modem_data {
 	u32 offset_srinfo_offset;
 	u32 offset_clk_table_offset;
 	u32 offset_buff_desc_offset;
-	u32 offset_capability_offset;
 
 	/* ctrl messages between cp and ap */
 	u32 ap2cp_msg[2];
 	u32 cp2ap_msg[2];
 	u32 cp2ap_united_status[2];
 	u32 ap2cp_united_status[2];
-	u32 ap2cp_llc_status[2];
-	u32 cp2ap_llc_status[2];
 	u32 ap2cp_kerneltime[2];
 	u32 ap2cp_kerneltime_sec[2];
 	u32 ap2cp_kerneltime_usec[2];
@@ -250,21 +415,6 @@ struct modem_data {
 	unsigned int sbi_pda_active_pos;
 	unsigned int sbi_ap_status_mask;
 	unsigned int sbi_ap_status_pos;
-
-#if IS_ENABLED(CONFIG_CP_LLC)
-	unsigned int sbi_ap_llc_way_mask;
-	unsigned int sbi_ap_llc_way_pos;
-	unsigned int sbi_ap_llc_alloc_mask;
-	unsigned int sbi_ap_llc_alloc_pos;
-	unsigned int sbi_ap_llc_return_mask;
-	unsigned int sbi_ap_llc_return_pos;
-	unsigned int sbi_cp_llc_way_mask;
-	unsigned int sbi_cp_llc_way_pos;
-	unsigned int sbi_cp_llc_alloc_mask;
-	unsigned int sbi_cp_llc_alloc_pos;
-	unsigned int sbi_cp_llc_return_mask;
-	unsigned int sbi_cp_llc_return_pos;
-#endif
 
 	unsigned int sbi_ap2cp_kerneltime_sec_mask;
 	unsigned int sbi_ap2cp_kerneltime_sec_pos;
@@ -296,12 +446,7 @@ struct modem_data {
 	/* new SIT buffer descriptor offset */
 	u32 buff_desc_offset;
 
-	/* capability */
-	u32 capability_offset;
-	u32 ap_capability_0;
-	u32 ap_capability_1;
-
-#if IS_ENABLED(CONFIG_MODEM_IF_LEGACY_QOS)
+#ifdef CONFIG_MODEM_IF_LEGACY_QOS
 	/* SIT priority queue info */
 	u32 legacy_raw_qos_head_tail_offset;
 	u32 legacy_raw_qos_buffer_offset;
@@ -323,12 +468,7 @@ struct modem_irq {
 	bool registered;
 };
 
-struct cpif_gpio {
-	unsigned int num;
-	const char *label;
-};
-
-#if IS_ENABLED(CONFIG_OF)
+#ifdef CONFIG_OF
 #define mif_dt_read_enum(np, prop, dest) \
 	do { \
 		u32 val; \
@@ -376,88 +516,20 @@ struct cpif_gpio {
 	} while (0)
 #endif
 
-#if IS_ENABLED(CONFIG_EXYNOS_MEMORY_LOGGER)
-#define CPIF_MEMLOG_SIZE         (1*1024*1024)
-
-struct cpif_memlog {
-	struct memlog *desc;
-	struct memlog_obj *log_obj_file;
-	struct memlog_obj *log_obj;
-	unsigned int log_enable;
-};
-
-extern struct cpif_memlog cpif_memlog;
-extern unsigned int get_cpif_memlog_log_enabled(void);
-extern struct memlog_obj *get_cpif_memlog_log_obj(void);
-
-void cpif_init_memlog(struct platform_device *pdev);
-
-#define pr_memlog(fmt, ...) 						\
-({									\
-	if (get_cpif_memlog_log_enabled())				\
-		memlog_write_printf(get_cpif_memlog_log_obj(),		\
-			MEMLOG_LEVEL_NOTICE,				\
-			fmt, ##__VA_ARGS__);				\
-})
-#define pr_memlog_level(level, fmt, ...) 				\
-({									\
-	if (get_cpif_memlog_log_enabled())				\
-		memlog_write_printf(get_cpif_memlog_log_obj(), level,	\
-			fmt, ##__VA_ARGS__);				\
-})
-#define pr_memlog_level_ratelimited(level, fmt, ...)			\
-({									\
-	static DEFINE_RATELIMIT_STATE(_rs,				\
-				      DEFAULT_RATELIMIT_INTERVAL,	\
-				      DEFAULT_RATELIMIT_BURST);		\
-									\
-	if (__ratelimit(&_rs))						\
-		if (get_cpif_memlog_log_enabled())			\
-			memlog_write_printf(get_cpif_memlog_log_obj(),	\
-				level,					\
-				fmt, ##__VA_ARGS__);			\
-})
-
-#else
-#define pr_memlog(fmt, args...)
-#define pr_memlog_level(level, fmt, args...)
-#define pr_memlog_level_ratelimited(level, fmt, ...)
-#endif
-
-#define LOG_TAG	"cpif: "
+#define LOG_TAG	"mif: "
 #define FUNC	(__func__)
 #define CALLER	(__builtin_return_address(0))
 
-#define mif_err_limited(fmt, ...)									\
-({													\
-	printk_ratelimited(KERN_ERR LOG_TAG "%s: " pr_fmt(fmt), __func__, ##__VA_ARGS__);		\
-	pr_memlog_level_ratelimited(MEMLOG_LEVEL_ERR, "%s: " pr_fmt(fmt), __func__, ##__VA_ARGS__);	\
-})
-#define mif_err(fmt, ...)										\
-({													\
-	pr_err(LOG_TAG "%s: " pr_fmt(fmt), __func__, ##__VA_ARGS__);					\
-	pr_memlog_level(MEMLOG_LEVEL_ERR, "%s: " pr_fmt(fmt), __func__, ##__VA_ARGS__);			\
-})
-#define mif_info_limited(fmt, ...)									\
-({													\
-	printk_ratelimited(KERN_INFO LOG_TAG "%s: " pr_fmt(fmt), __func__, ##__VA_ARGS__);		\
-	pr_memlog_level_ratelimited(MEMLOG_LEVEL_NOTICE, "%s: " pr_fmt(fmt), __func__, ##__VA_ARGS__);	\
-})
-#define mif_info(fmt, ...)										\
-({													\
-	pr_info(LOG_TAG "%s: " pr_fmt(fmt), __func__, ##__VA_ARGS__);					\
-	pr_memlog_level(MEMLOG_LEVEL_NOTICE, "%s: " pr_fmt(fmt), __func__, ##__VA_ARGS__);		\
-})
-#define mif_debug(fmt, ...)										\
-({													\
-	pr_debug(LOG_TAG "%s: " pr_fmt(fmt), __func__, ##__VA_ARGS__);					\
-	pr_memlog_level(MEMLOG_LEVEL_DEBUG, "%s: " pr_fmt(fmt), __func__, ##__VA_ARGS__);		\
-})
-#define mif_trace(fmt, ...)										\
-({													\
-	printk(KERN_DEBUG "cpif: %s: %d: called(%pF): " fmt,						\
-		__func__, __LINE__, __builtin_return_address(0), ##__VA_ARGS__);			\
-	pr_memlog_level(MEMLOG_LEVEL_DEBUG, KERN_DEBUG "cpif: %s: %d: called(%pF): " fmt,		\
-		__func__, __LINE__, __builtin_return_address(0), ##__VA_ARGS__); 			\
-})
+#define mif_err_limited(fmt, ...) \
+	printk_ratelimited(KERN_ERR LOG_TAG "%s: " pr_fmt(fmt), __func__, ##__VA_ARGS__)
+#define mif_err(fmt, ...) \
+	pr_err(LOG_TAG "%s: " pr_fmt(fmt), __func__, ##__VA_ARGS__)
+#define mif_debug(fmt, ...) \
+	pr_debug(LOG_TAG "%s: " pr_fmt(fmt), __func__, ##__VA_ARGS__)
+#define mif_info(fmt, ...) \
+	pr_info(LOG_TAG "%s: " pr_fmt(fmt), __func__, ##__VA_ARGS__)
+#define mif_trace(fmt, ...) \
+	printk(KERN_DEBUG "mif: %s: %d: called(%pF): " fmt, \
+		__func__, __LINE__, __builtin_return_address(0), ##__VA_ARGS__)
+
 #endif

@@ -1,7 +1,6 @@
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/io.h>
-#include <linux/module.h>
 #include <soc/samsung/ect_parser.h>
 
 #include "cmucal.h"
@@ -215,7 +214,6 @@ unsigned long vclk_recalc_rate(unsigned int id)
 {
 	struct vclk *vclk;
 	int i, ret;
-	unsigned int rate;
 
 	if (!IS_VCLK(id))
 		return ra_recalc_rate(id);
@@ -223,17 +221,6 @@ unsigned long vclk_recalc_rate(unsigned int id)
 	vclk = cmucal_get_node(id);
 	if (!vclk)
 		return 0;
-
-	if (vclk->is_fine_grain) {
-		rate = ra_recalc_rate(vclk->list[0]) / 1000;
-		if (rate > 27000) {
-			if (vclk->vrate == 0)
-				vclk->vrate = rate;
-			else
-				return rate;
-		}
-		return vclk->vrate;
-	}
 
 	if (IS_DFS_VCLK(vclk->id) ||
 	    IS_COMMON_VCLK(vclk->id) ||
@@ -451,7 +438,7 @@ static int vclk_get_dfs_info(struct vclk *vclk)
 
 	gen_block = ect_get_block("GEN");
 	if (gen_block) {
-		sprintf(buf, "M%s", vclk->name);
+		sprintf(buf, "MINMAX_%s", vclk->name);
 		minmax = ect_gen_param_get_table(gen_block, buf);
 		if (minmax != NULL) {
 			for (i = 0; i < minmax->num_of_row; i++) {
@@ -594,7 +581,7 @@ static int vclk_get_asv_info(struct vclk *vclk)
 
 	gen_block = ect_get_block("GEN");
 	if (gen_block) {
-		sprintf(buf, "M%s", vclk->name);
+		sprintf(buf, "MINMAX_%s", vclk->name);
 		minmax = ect_gen_param_get_table(gen_block, buf);
 		if (minmax != NULL)
 			goto minmax_skip;
@@ -682,7 +669,7 @@ int vclk_register_ops(unsigned int id, struct vclk_trans_ops *ops)
 	return -EVCLKNOENT;
 }
 
-int vclk_initialize(void)
+int __init vclk_initialize(void)
 {
 	pr_info("vclk initialize for cmucal\n");
 
@@ -695,5 +682,3 @@ int vclk_initialize(void)
 
 	return 0;
 }
-
-MODULE_LICENSE("GPL");

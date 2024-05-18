@@ -52,54 +52,24 @@ enum trans_opt {
 #define get_mask(_w, _s)	(width_to_mask(_w) << _s)
 #define clear_value(_a, _w, _s)	(readl(_a) & ~(get_mask(_w, _s)))
 
-extern unsigned int frac_rpll_list[];
-extern unsigned int frac_rpll_size;
-
-static inline int is_frac_r_pll(struct cmucal_clk clk)
-{
-	int i;
-
-	for (i = 0; i < frac_rpll_size; i++) {
-		if (clk.id == frac_rpll_list[i])
-			return 1;
-	}
-
-	return 0;
-}
-
 static inline int is_normal_pll(struct cmucal_pll *pll)
 {
-	if (pll->freq_type != RPLL) {
-		if (pll->flock_time)
-			return 0;
+	if (pll->flock_time)
+		return 0;
 
-		return 1;
-	} else {
-		if (is_frac_r_pll(pll->clk))
-			return 0;
-
-		return 1;
-	}
+	return 1;
 }
 
 static inline int is_frac_pll(struct cmucal_pll *pll)
 {
-	if (pll->freq_type != RPLL) {
-		if (pll->flock_time)
-			return 1;
+	if (pll->flock_time)
+		return 1;
 
-		return 0;
-	} else {
-		if (is_frac_r_pll(pll->clk))
-			return 1;
-
-		return 0;
-	}
+	return 0;
 }
 
 extern struct pll_spec *pll_get_spec(struct cmucal_pll *pll);
 extern int pll_get_locktime(struct cmucal_pll *pll);
-extern int pll_get_info(struct cmucal_pll *pll);
 extern int pll_find_table(struct cmucal_pll *pll,
 			  struct cmucal_pll_table *table,
 			  unsigned long long fin,

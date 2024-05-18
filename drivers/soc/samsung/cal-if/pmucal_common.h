@@ -7,7 +7,7 @@
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/sizes.h>
-#include <soc/samsung/debug-snapshot.h>
+#include <linux/debug-snapshot.h>
 #include <linux/delay.h>
 #endif
 
@@ -33,12 +33,6 @@ enum pmucal_seq_acctype {
 	PMUCAL_CLR_BIT_ATOMIC,
 	PMUCAL_DELAY,
 	PMUCAL_CLEAR_PEND,
-	PMUCAL_COND_WRITE_RETRY,
-	PMUCAL_COND_WRITE_RETRY_INV,
-	PMUCAL_READ_EVT10,
-	PMUCAL_WRITE_EVT10,
-	PMUCAL_READ_EVT11,
-	PMUCAL_WRITE_EVT11,
 };
 
 /* represents each row in the PMU sequence guide */

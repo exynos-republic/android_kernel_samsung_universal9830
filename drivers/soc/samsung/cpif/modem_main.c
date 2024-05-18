@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /* linux/drivers/modem/modem.c
  *
  * Copyright (C) 2010 Google, Inc.
@@ -21,6 +20,7 @@
 #include <linux/kobject.h>
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
+#include <linux/miscdevice.h>
 #include <linux/if_arp.h>
 #include <linux/device.h>
 
@@ -34,10 +34,11 @@
 #include <linux/irq.h>
 #include <linux/gpio.h>
 #include <linux/proc_fs.h>
-#if IS_ENABLED(CONFIG_OF)
+#ifdef CONFIG_OF
 #include <linux/of_gpio.h>
 #endif
 #include <linux/delay.h>
+#include <linux/wakelock.h>
 #include <linux/mfd/syscon.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/dma-contiguous.h>
@@ -45,17 +46,24 @@
 #include <linux/inet.h>
 #include <net/ipv6.h>
 
-#if IS_ENABLED(CONFIG_LINK_DEVICE_SHMEM)
+#ifdef CONFIG_LINK_DEVICE_SHMEM
 #include <linux/shm_ipc.h>
 #include <linux/mcu_ipc.h>
+#endif
+#ifdef CONFIG_LINK_FORWARD
+#include <linux/linkforward.h>
 #endif
 
 #include <soc/samsung/exynos-modem-ctrl.h>
 #include "modem_prj.h"
 #include "modem_variation.h"
 #include "modem_utils.h"
+#include "cpif_clat_info.h"
+#include "cpif_tethering_info.h"
 
-#if IS_ENABLED(CONFIG_MODEM_IF_LEGACY_QOS)
+extern int exynos_pcie_rc_lanechange(int ch_num, int lane);
+
+#ifdef CONFIG_MODEM_IF_LEGACY_QOS
 #include "cpif_qos_info.h"
 #endif
 
@@ -122,11 +130,11 @@ static struct modem_ctl *create_modemctl_device(struct platform_device *pdev,
 
 	modemctl->msd = msd;
 
-	modemctl->phone_state = STATE_INIT;
+	modemctl->phone_state = STATE_OFFLINE;
 
 	INIT_LIST_HEAD(&modemctl->modem_state_notify_list);
 	spin_lock_init(&modemctl->lock);
-	spin_lock_init(&modemctl->tx_timer_lock);
+	spin_lock_init(&modemctl->pcie_lock);
 	init_completion(&modemctl->init_cmpl);
 	init_completion(&modemctl->off_cmpl);
 
@@ -174,7 +182,6 @@ static struct io_device *create_io_device(struct platform_device *pdev,
 	iod->ipc_version = pdata->ipc_version;
 	atomic_set(&iod->opened, 0);
 	spin_lock_init(&iod->info_id_lock);
-	spin_lock_init(&iod->clat_lock);
 
 	/* link between io device and modem control */
 	iod->mc = modemctl;
@@ -205,6 +212,9 @@ static struct io_device *create_io_device(struct platform_device *pdev,
 	if (iod->format != IPC_RAW)
 		insert_iod_with_format(msd, iod->format, iod);
 
+	if (sipc5_is_not_reserved_channel(iod->ch))
+		insert_iod_with_channel(msd, iod->ch, iod);
+
 	switch (pdata->protocol) {
 	case PROTOCOL_SIPC:
 		if (sipc5_is_not_reserved_channel(iod->ch))
@@ -226,12 +236,11 @@ static struct io_device *create_io_device(struct platform_device *pdev,
 		return NULL;
 	}
 
-	mif_info("%s created. attrs:0x%08x type:0x%x ndev_feat:0x%llX\n", iod->name, iod->attrs,
-		iod->io_typ, (iod->ndev ? iod->ndev->features : 0));
+	mif_info("%s created\n", iod->name);
 	return iod;
 }
 
-static int attach_devices(struct io_device *iod, struct device *dev)
+static int attach_devices(struct io_device *iod)
 {
 	struct modem_shared *msd = iod->msd;
 	struct link_device *ld;
@@ -249,11 +258,7 @@ static int attach_devices(struct io_device *iod, struct device *dev)
 		BUG();
 	}
 
-	iod->ws = cpif_wake_lock_register(dev, iod->name);
-	if (iod->ws == NULL) {
-		mif_err("%s: wakeup_source_register fail\n", iod->name);
-		return -EINVAL;
-	}
+	wake_lock_init(&iod->wakelock, WAKE_LOCK_SUSPEND, iod->name);
 
 	switch (iod->ch) {
 	case SIPC5_CH_ID_FMT_0 ... SIPC5_CH_ID_FMT_9:
@@ -289,12 +294,10 @@ static int attach_devices(struct io_device *iod, struct device *dev)
 	return 0;
 }
 
-#if IS_ENABLED(CONFIG_OF)
+#ifdef CONFIG_OF
 static int parse_dt_common_pdata(struct device_node *np,
 				 struct modem_data *pdata)
 {
-	struct device_node *iodevs = NULL;
-
 	mif_dt_read_string(np, "mif,name", pdata->name);
 	mif_dt_read_u32(np, "mif,cp_num", pdata->cp_num);
 
@@ -309,20 +312,13 @@ static int parse_dt_common_pdata(struct device_node *np,
 	mif_dt_read_u32(np, "mif,link_attrs", pdata->link_attrs);
 	mif_dt_read_u32(np, "mif,interrupt_types", pdata->interrupt_types);
 
-	iodevs = of_get_child_by_name(np, "iodevs");
-	if (!iodevs) {
-		mif_err("can not get iodevs\n");
-		return -ENODEV;
-	}
-	pdata->num_iodevs = of_get_child_count(iodevs);
-	if (!pdata->num_iodevs) {
-		mif_err("can not get num_iodevs\n");
-		return -ENODEV;
-	}
-	mif_info("num_iodevs:%d\n", pdata->num_iodevs);
+	mif_dt_read_u32(np, "mif,num_iodevs", pdata->num_iodevs);
 
-	mif_dt_read_u32_noerr(np, "mif,capability_check", pdata->capability_check);
-	mif_info("capability_check:%d\n", pdata->capability_check);
+#if defined(CONFIG_SEC_MODEM_S5000AP) && defined(CONFIG_SEC_MODEM_S5100)
+	if (pdata->link_type == LINKDEV_SHMEM)
+		mif_dt_read_u32(np, "ulpath_offset", pdata->ulpath_offset);
+#endif
+
 
 	return 0;
 }
@@ -350,25 +346,21 @@ static int parse_dt_mbox_pdata(struct device *dev, struct device_node *np,
 	mif_dt_read_u32(np, "mif,int_ap2cp_wakeup", mbox->int_ap2cp_wakeup);
 	mif_dt_read_u32(np, "mif,int_ap2cp_status", mbox->int_ap2cp_status);
 	mif_dt_read_u32(np, "mif,int_ap2cp_active", mbox->int_ap2cp_active);
-#if IS_ENABLED(CONFIG_CP_LCD_NOTIFIER)
+#if defined(CONFIG_CP_LCD_NOTIFIER)
 	mif_dt_read_u32(np, "mif,int_ap2cp_lcd_status",
 			mbox->int_ap2cp_lcd_status);
-#endif
-#if IS_ENABLED(CONFIG_CP_LLC)
-	mif_dt_read_u32(np, "mif,int_ap2cp_llc_status",
-			mbox->int_ap2cp_llc_status);
 #endif
 	mif_dt_read_u32(np, "mif,int_ap2cp_uart_noti", mbox->int_ap2cp_uart_noti);
 
 	mif_dt_read_u32(np, "mif,irq_cp2ap_msg", mbox->irq_cp2ap_msg);
 	mif_dt_read_u32(np, "mif,irq_cp2ap_status", mbox->irq_cp2ap_status);
 	mif_dt_read_u32(np, "mif,irq_cp2ap_active", mbox->irq_cp2ap_active);
-#if IS_ENABLED(CONFIG_CP_LLC)
-	mif_dt_read_u32(np, "mif,mbox2_irq_cp2ap_llc_status",
-			mbox->irq_cp2ap_llc_status);
-#endif
 	mif_dt_read_u32(np, "mif,irq_cp2ap_wakelock", mbox->irq_cp2ap_wakelock);
 	mif_dt_read_u32(np, "mif,irq_cp2ap_ratmode", mbox->irq_cp2ap_rat_mode);
+#if defined(CONFIG_SEC_MODEM_S5000AP) && defined(CONFIG_SEC_MODEM_S5100)
+	mif_dt_read_u32(np, "mif,irq_cp2ap_change_ul_path",
+			mbox->irq_cp2ap_change_ul_path);
+#endif
 
 	return ret;
 }
@@ -396,9 +388,8 @@ static int parse_dt_ipc_region_pdata(struct device *dev, struct device_node *np,
 	mif_dt_read_u32_noerr(np, "offset_srinfo_offset", pdata->offset_srinfo_offset);
 	mif_dt_read_u32_noerr(np, "offset_clk_table_offset", pdata->offset_clk_table_offset);
 	mif_dt_read_u32_noerr(np, "offset_buff_desc_offset", pdata->offset_buff_desc_offset);
-	mif_dt_read_u32_noerr(np, "offset_capability_offset", pdata->offset_capability_offset);
 
-#if IS_ENABLED(CONFIG_MODEM_IF_LEGACY_QOS)
+#ifdef CONFIG_MODEM_IF_LEGACY_QOS
 	/* legacy priority queue setting */
 	mif_dt_read_u32(np, "legacy_raw_qos_head_tail_offset",
 			pdata->legacy_raw_qos_head_tail_offset);
@@ -417,21 +408,10 @@ static int parse_dt_ipc_region_pdata(struct device *dev, struct device_node *np,
 	/* offset setting for new SIT buffer descriptors (optional) */
 	mif_dt_read_u32_noerr(np, "buff_desc_offset", pdata->buff_desc_offset);
 
-	/* offset setting for capability */
-	if (pdata->capability_check) {
-		mif_dt_read_u32(np, "capability_offset", pdata->capability_offset);
-		mif_dt_read_u32(np, "ap_capability_0", pdata->ap_capability_0);
-		mif_dt_read_u32(np, "ap_capability_1", pdata->ap_capability_1);
-	}
-
 	of_property_read_u32_array(np, "ap2cp_msg", pdata->ap2cp_msg, 2);
 	of_property_read_u32_array(np, "cp2ap_msg", pdata->cp2ap_msg, 2);
 	of_property_read_u32_array(np, "cp2ap_united_status", pdata->cp2ap_united_status, 2);
 	of_property_read_u32_array(np, "ap2cp_united_status", pdata->ap2cp_united_status, 2);
-#if IS_ENABLED(CONFIG_CP_LLC)
-	of_property_read_u32_array(np, "ap2cp_llc_status", pdata->ap2cp_llc_status, 2);
-	of_property_read_u32_array(np, "cp2ap_llc_status", pdata->cp2ap_llc_status, 2);
-#endif
 	of_property_read_u32_array(np, "ap2cp_kerneltime", pdata->ap2cp_kerneltime, 2);
 	of_property_read_u32_array(np, "ap2cp_kerneltime_sec", pdata->ap2cp_kerneltime_sec, 2);
 	of_property_read_u32_array(np, "ap2cp_kerneltime_usec", pdata->ap2cp_kerneltime_usec, 2);
@@ -451,7 +431,7 @@ static int parse_dt_ipc_region_pdata(struct device *dev, struct device_node *np,
 	mif_dt_read_u32(np, "sbi_ap_status_pos", pdata->sbi_ap_status_pos);
 	mif_dt_read_u32(np, "sbi_crash_type_mask", pdata->sbi_crash_type_mask);
 	mif_dt_read_u32(np, "sbi_crash_type_pos", pdata->sbi_crash_type_pos);
-#if IS_ENABLED(CONFIG_CP_LCD_NOTIFIER)
+#if defined(CONFIG_CP_LCD_NOTIFIER)
 	mif_dt_read_u32(np, "sbi_lcd_status_mask", pdata->sbi_lcd_status_mask);
 	mif_dt_read_u32(np, "sbi_lcd_status_pos", pdata->sbi_lcd_status_pos);
 #endif
@@ -459,20 +439,6 @@ static int parse_dt_ipc_region_pdata(struct device *dev, struct device_node *np,
 	mif_dt_read_u32(np, "sbi_uart_noti_pos", pdata->sbi_uart_noti_pos);
 	mif_dt_read_u32(np, "sbi_ds_det_mask", pdata->sbi_ds_det_mask);
 	mif_dt_read_u32(np, "sbi_ds_det_pos", pdata->sbi_ds_det_pos);
-#if IS_ENABLED(CONFIG_CP_LLC)
-	mif_dt_read_u32(np, "sbi_ap_llc_way_mask", pdata->sbi_ap_llc_way_mask);
-	mif_dt_read_u32(np, "sbi_ap_llc_way_pos", pdata->sbi_ap_llc_way_pos);
-	mif_dt_read_u32(np, "sbi_ap_llc_alloc_mask", pdata->sbi_ap_llc_alloc_mask);
-	mif_dt_read_u32(np, "sbi_ap_llc_alloc_pos", pdata->sbi_ap_llc_alloc_pos);
-	mif_dt_read_u32(np, "sbi_ap_llc_return_mask", pdata->sbi_ap_llc_return_mask);
-	mif_dt_read_u32(np, "sbi_ap_llc_return_pos", pdata->sbi_ap_llc_return_pos);
-	mif_dt_read_u32(np, "sbi_cp_llc_way_mask", pdata->sbi_cp_llc_way_mask);
-	mif_dt_read_u32(np, "sbi_cp_llc_way_pos", pdata->sbi_cp_llc_way_pos);
-	mif_dt_read_u32(np, "sbi_cp_llc_alloc_mask", pdata->sbi_cp_llc_alloc_mask);
-	mif_dt_read_u32(np, "sbi_cp_llc_alloc_pos", pdata->sbi_cp_llc_alloc_pos);
-	mif_dt_read_u32(np, "sbi_cp_llc_return_mask", pdata->sbi_cp_llc_return_mask);
-	mif_dt_read_u32(np, "sbi_cp_llc_return_pos", pdata->sbi_cp_llc_return_pos);
-#endif
 
 	mif_dt_read_u32_noerr(np, "sbi_ap2cp_kerneltime_sec_mask",
 			pdata->sbi_ap2cp_kerneltime_sec_mask);
@@ -512,7 +478,7 @@ static int parse_dt_iodevs_pdata(struct device *dev, struct device_node *np,
 		mif_dt_read_u32(child, "iod,attrs", iod->attrs);
 		mif_dt_read_u32_noerr(child, "iod,max_tx_size",
 				iod->ul_buffer_size);
-		if (iod->attrs & IO_ATTR_SBD_IPC) {
+		if (iod->attrs & IODEV_ATTR(ATTR_SBD_IPC)) {
 			mif_dt_read_u32(child, "iod,ul_num_buffers",
 					iod->ul_num_buffers);
 			mif_dt_read_u32(child, "iod,ul_buffer_size",
@@ -523,7 +489,7 @@ static int parse_dt_iodevs_pdata(struct device *dev, struct device_node *np,
 					iod->dl_buffer_size);
 		}
 
-		if (iod->attrs & IO_ATTR_OPTION_REGION)
+		if (iod->attrs & IODEV_ATTR(ATTR_OPTION_REGION))
 			mif_dt_read_string(child, "iod,option_region",
 					iod->option_region);
 
@@ -604,7 +570,7 @@ enum mif_sim_mode {
 
 static int simslot_count(struct seq_file *m, void *v)
 {
-	enum mif_sim_mode mode = (enum mif_sim_mode)m->private;
+	enum mif_sim_mode mode = (enum mif_sim_mode)(uintptr_t)m->private;
 
 	seq_printf(m, "%u\n", mode);
 	return 0;
@@ -622,7 +588,7 @@ static const struct file_operations simslot_count_fops = {
 	.release = single_release,
 };
 
-#if IS_ENABLED(CONFIG_GPIO_DS_DETECT)
+#ifdef CONFIG_GPIO_DS_DETECT
 static enum mif_sim_mode get_sim_mode(struct device_node *of_node)
 {
 	enum mif_sim_mode mode = MIF_SIM_SINGLE;
@@ -637,7 +603,7 @@ static enum mif_sim_mode get_sim_mode(struct device_node *of_node)
 
 	retval = gpio_request(gpio_ds_det, "DS_DET");
 	if (retval) {
-		mif_err("Failed to request GPIO(%d)\n", retval);
+		mif_err("Failed to reqeust GPIO(%d)\n", retval);
 		goto make_proc;
 	} else {
 		gpio_direction_input(gpio_ds_det);
@@ -651,7 +617,7 @@ static enum mif_sim_mode get_sim_mode(struct device_node *of_node)
 	gpio_free(gpio_ds_det);
 
 make_proc:
-	if (!proc_create_data("simslot_count", 0444, NULL, &simslot_count_fops,
+	if (!proc_create_data("simslot_count", S_IRUGO, NULL, &simslot_count_fops,
 			(void *)(long)mode)) {
 		mif_err("Failed to create proc\n");
 		mode = MIF_SIM_SINGLE;
@@ -666,8 +632,7 @@ static enum mif_sim_mode get_sim_mode(struct device_node *of_node)
 }
 #endif
 
-static ssize_t do_cp_crash_store(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
+static ssize_t do_cp_crash_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	modem_force_crash_exit_ext();
 
@@ -678,9 +643,43 @@ static ssize_t modem_state_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct modem_ctl *mc = dev_get_drvdata(dev);
-
-	return scnprintf(buf, PAGE_SIZE, "%s\n", cp_state_str(mc->phone_state));
+	return sprintf(buf, "%s\n", cp_state_str(mc->phone_state));
 }
+
+#ifdef CONFIG_LINK_FORWARD
+static ssize_t linkforward_state_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return linkforward_get_state(buf);
+}
+
+static ssize_t linkforward_mode_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "linkforward global mode:%d\n",
+			get_linkforward_mode());
+}
+
+static ssize_t linkforward_mode_store(struct device *dev,
+		struct device_attribute *attr,
+		const char *buf, size_t count)
+{
+	int ret;
+	int val = 0;
+
+	ret = kstrtoint(buf, 10, &val);
+	if ((ret > 3) || (val < 0))
+		return -EINVAL;
+
+	set_linkforward_mode(val);
+
+	ret = count;
+	return ret;
+}
+
+static DEVICE_ATTR_RO(linkforward_state);
+static DEVICE_ATTR_RW(linkforward_mode);
+#endif
 
 static DEVICE_ATTR_WO(do_cp_crash);
 static DEVICE_ATTR_RO(modem_state);
@@ -688,30 +687,284 @@ static DEVICE_ATTR_RO(modem_state);
 static struct attribute *modem_attrs[] = {
 	&dev_attr_do_cp_crash.attr,
 	&dev_attr_modem_state.attr,
+#ifdef CONFIG_LINK_FORWARD
+	&dev_attr_linkforward_state.attr,
+	&dev_attr_linkforward_mode.attr,
+#endif
 	NULL,
 };
 ATTRIBUTE_GROUPS(modem);
 
-static int cpif_cdev_alloc_region(struct modem_data *pdata, struct modem_shared *msd)
+static ssize_t xlat_plat_show(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
 {
-	int ret;
+	struct in6_addr addr = IN6ADDR_ANY_INIT;
+	ssize_t count = 0;
 
-	ret = alloc_chrdev_region(&msd->cdev_major, 0, pdata->num_iodevs, "cpif");
-	if (ret < 0) {
-		mif_err("alloc_chrdev_region() failed:%d\n", ret);
-		return ret;
-	}
+	cpif_get_plat_prefix(0, &addr);
+	count += sprintf(buf, "plat prefix: %pI6\n", &addr);
 
-	msd->cdev_class = class_create(THIS_MODULE, "cpif");
-	if (IS_ERR(msd->cdev_class)) {
-		mif_err("class_create() failed:%d\n", PTR_ERR(msd->cdev_class));
-		ret = -ENOMEM;
-		unregister_chrdev_region(MAJOR(msd->cdev_major), pdata->num_iodevs);
-		return ret;
-	}
+	cpif_get_plat_prefix(1, &addr);
+	count += sprintf(buf + count, "plat prefix: %pI6\n", &addr);
 
-	return 0;
+	return count;
 }
+
+static ssize_t xlat_plat_store(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count)
+{
+	struct in6_addr val;
+	char *ptr = NULL;
+
+	mif_info("-- plat prefix: %s\n", buf);
+
+	ptr = strstr(buf, "@");
+	if (!ptr)
+		return -EINVAL;
+	*ptr++ = '\0';
+
+	if (in6_pton(buf, strlen(buf), val.s6_addr, '\0', NULL) == 0)
+		return -EINVAL;
+
+	if (strstr(ptr, "rmnet0"))
+		cpif_set_plat_prefix(0, val);
+	else if (strstr(ptr, "rmnet1"))
+		cpif_set_plat_prefix(1, val);
+	else
+		mif_err("-- unhandled plat prefix for %s\n", ptr);
+
+	return count;
+}
+static ssize_t xlat_addr_show(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+	struct in6_addr addr = IN6ADDR_ANY_INIT;
+	ssize_t count = 0;
+
+	cpif_get_clat_addr(0, &addr);
+	count += sprintf(buf, "clat addr: %pI6\n", &addr);
+
+	cpif_get_clat_addr(1, &addr);
+	count += sprintf(buf + count, "clat addr: %pI6\n", &addr);
+
+	return count;
+}
+
+static ssize_t xlat_addr_store(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count)
+{
+	struct in6_addr val;
+	char *ptr = NULL;
+
+	mif_info("-- v6 addr: %s\n", buf);
+
+	ptr = strstr(buf, "@");
+	if (!ptr)
+		return -EINVAL;
+	*ptr++ = '\0';
+
+	if (in6_pton(buf, strlen(buf), val.s6_addr, '\0', NULL) == 0)
+		return -EINVAL;
+
+	if (strstr(ptr, "rmnet0"))
+		cpif_set_clat_addr(0, val);
+	else if (strstr(ptr, "rmnet1"))
+		cpif_set_clat_addr(1, val);
+	else
+		mif_err("-- unhandled clat addr for %s\n", ptr);
+
+	return count;
+}
+static ssize_t xlat_v4addr_show(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+	u32 addr = INADDR_ANY;
+	ssize_t count = 0;
+
+	cpif_get_v4_filter(0, &addr);
+	count += sprintf(buf, "v4addr: %pI4\n", &addr);
+
+	cpif_get_v4_filter(1, &addr);
+	count += sprintf(buf + count, "v4addr: %pI4\n", &addr);
+
+	return count;
+}
+
+static ssize_t xlat_v4addr_store(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count)
+{
+	struct in_addr val;
+	char *ptr = NULL;
+
+	mif_info("-- v4 addr: %s\n", buf);
+
+	ptr = strstr(buf, "@");
+	if (!ptr)
+		return -EINVAL;
+	*ptr++ = '\0';
+
+	if (in4_pton(buf, strlen(buf), (u8 *)&val.s_addr, '\0', NULL) == 0)
+		return -EINVAL;
+
+	if (strstr(ptr, "rmnet0"))
+		cpif_set_v4_filter(0, val.s_addr);
+	else if (strstr(ptr, "rmnet1"))
+		cpif_set_v4_filter(1, val.s_addr);
+	else
+		mif_err("-- unhandled clat v4 addr for %s\n", ptr);
+
+	return count;
+}
+
+static struct kobject *clat_kobject;
+static struct kobj_attribute xlat_plat_attribute = {
+	.attr = {.name = "xlat_plat", .mode = 0660},
+	.show = xlat_plat_show,
+	.store = xlat_plat_store,
+};
+static struct kobj_attribute xlat_addr_attribute = {
+	.attr = {.name = "xlat_addrs", .mode = 0660},
+	.show = xlat_addr_show,
+	.store = xlat_addr_store,
+};
+static struct kobj_attribute xlat_v4addr_attribute = {
+	.attr = {.name = "xlat_v4_addrs", .mode = 0660},
+	.show = xlat_v4addr_show,
+	.store = xlat_v4addr_store,
+};
+static struct attribute *clat_attrs[] = {
+	&xlat_plat_attribute.attr,
+	&xlat_addr_attribute.attr,
+	&xlat_v4addr_attribute.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(clat);
+
+
+static ssize_t upstream_dev_show(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+	char upstream_dev_name[IFNAMSIZ];
+	ssize_t count = 0;
+
+	cpif_tethering_upstream_dev_get(upstream_dev_name);
+	count += sprintf(buf, "tethering upstream dev: %s\n", upstream_dev_name);
+	mif_info("-- tethering upstream dev: %s\n", upstream_dev_name);
+
+	return count;
+}
+
+static ssize_t upstream_dev_store(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count)
+{
+	char upstream_dev_name_orig[IFNAMSIZ];
+	char upstream_dev_name_new[IFNAMSIZ];
+	char input[IFNAMSIZ];
+
+	cpif_tethering_upstream_dev_get(upstream_dev_name_orig);
+	mif_info("-- original tethering upstream dev: %s\n", upstream_dev_name_orig);
+
+	strlcpy(input, buf, IFNAMSIZ);
+	cpif_tethering_upstream_dev_set(input);
+
+	cpif_tethering_upstream_dev_get(upstream_dev_name_new);
+	mif_info("-- new tethering upstream dev: %s\n", upstream_dev_name_new);
+
+	return count;
+}
+static struct kobject *cpif_tethering_kobject;
+static struct kobj_attribute upstream_dev_attribute = {
+	.attr = {.name = "upstream_dev", .mode = 0660},
+	.show = upstream_dev_show,
+	.store = upstream_dev_store,
+};
+static struct attribute *cpif_tethering_attrs[] = {
+	&upstream_dev_attribute.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(cpif_tethering);
+
+#ifdef CONFIG_MODEM_IF_LEGACY_QOS
+static ssize_t hiprio_uid_show(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+	struct hiprio_uid_list *hiprio_list;
+	struct hiprio_uid *node;
+	ssize_t count = 0;
+	int i = 0;
+
+	hiprio_list = cpif_qos_get_list();
+	if (!hiprio_list) {
+		mif_err("-- hiprio uid list does not exist\n");
+		return -EINVAL;
+	}
+
+	if (hash_empty(hiprio_list->uid_map)) {
+		mif_err("-- there is no hiprio uid\n");
+		return count;
+	}
+
+	mif_info("-- uid list --\n");
+	hash_for_each(hiprio_list->uid_map, i, node, h_node) {
+		count += sprintf(buf + count, "%d\n", node->uid);
+		mif_info("index %d: %d\n", i, node->uid);
+	}
+
+	return count;
+}
+
+static ssize_t hiprio_uid_store(struct kobject *kobj,
+		struct kobj_attribute *attr,
+		const char *buf, size_t count)
+{
+	long uid = 0;
+
+	mif_info("cpif_qos command input:  %s\n", buf);
+
+	if (strstr(buf, "add")) {
+		if (kstrtol(buf + 4, 10, &uid)) {
+			mif_err("-- failed to parse uid\n");
+			return -EINVAL;
+		}
+		mif_info("-- user requires addition of uid: %d\n", uid);
+		if (!cpif_qos_add_uid((u32)uid)) {
+			mif_err("-- Adding uid %d to hiprio list failed\n", uid);
+			return -EINVAL;
+		}
+	} else if (strstr(buf, "rm")) {
+		if (kstrtol(buf + 3, 10, &uid)) {
+			mif_err("-- failed to parse uid\n");
+			return -EINVAL;
+		}
+		mif_info("-- user requires removal of uid: %d\n", uid);
+		if (!cpif_qos_remove_uid((u32)uid)) {
+			mif_err("-- Removing uid %d from hiprio list failed\n", uid);
+			return -EINVAL;
+		}
+	} else {
+		mif_err("-- command not valid\n");
+		return -EINVAL;
+	}
+
+	return count;
+}
+
+static struct kobject *cpif_qos_kobject;
+static struct kobj_attribute hiprio_uid_attribute = {
+	.attr = {.name = "hiprio_uid", .mode = 0660},
+	.show = hiprio_uid_show,
+	.store = hiprio_uid_store,
+};
+static struct attribute *cpif_qos_attrs[] = {
+	&hiprio_uid_attribute.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(cpif_qos);
+#endif /* End of CONFIG_MODEM_IF_LEGACY_QOS */
 
 static int cpif_probe(struct platform_device *pdev)
 {
@@ -727,13 +980,9 @@ static int cpif_probe(struct platform_device *pdev)
 	int err;
 
 	mif_info("Exynos CP interface driver %s\n", get_cpif_driver_version());
-	mif_info("%s: +++ (%s)\n", pdev->name, CONFIG_OPTION_REGION);
 
-	err = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(36));
-	if (err) {
-		mif_err("dma_set_mask_and_coherent() error:%d\n", err);
-		return err;
-	}
+	mif_err("%s: +++ (%s)\n",
+		pdev->name, CONFIG_OPTION_REGION);
 
 	if (dev->of_node) {
 		pdata = modem_if_parse_dt_pdata(dev);
@@ -775,27 +1024,15 @@ static int cpif_probe(struct platform_device *pdev)
 	/* set sime mode */
 	sim_mode = get_sim_mode(dev->of_node);
 
-	/* char device */
-	err = cpif_cdev_alloc_region(pdata, msd);
-	if (err) {
-		mif_err("cpif_cdev_alloc_region() err:%d\n", err);
-		goto free_mc;
-	}
-
 	/* create io deivces and connect to modemctl device */
 	size = sizeof(struct io_device *) * pdata->num_iodevs;
 	iod = kzalloc(size, GFP_KERNEL);
-	if (!iod) {
-		mif_err("kzalloc() err\n");
-		goto free_chrdev;
-	}
-
 	for (i = 0; i < pdata->num_iodevs; i++) {
 		if (sim_mode < MIF_SIM_DUAL &&
-			pdata->iodevs[i].attrs & IO_ATTR_DUALSIM)
+			pdata->iodevs[i].attrs & IODEV_ATTR(ATTR_DUALSIM))
 			continue;
 
-		if (pdata->iodevs[i].attrs & IO_ATTR_OPTION_REGION
+		if (pdata->iodevs[i].attrs & IODEV_ATTR(ATTR_OPTION_REGION)
 				&& strcmp(pdata->iodevs[i].option_region,
 					CONFIG_OPTION_REGION))
 			continue;
@@ -812,7 +1049,7 @@ static int cpif_probe(struct platform_device *pdev)
 			list_add_tail(&iod[i]->list,
 					&modemctl->modem_state_notify_list);
 
-		attach_devices(iod[i], dev);
+		attach_devices(iod[i]);
 	}
 
 	cp_btl_create(&pdata->btl, dev);
@@ -824,15 +1061,43 @@ static int cpif_probe(struct platform_device *pdev)
 	if (sysfs_create_groups(&dev->kobj, modem_groups))
 		mif_err("failed to create modem groups node\n");
 
-#if IS_ENABLED(CONFIG_MODEM_IF_LEGACY_QOS)
+	clat_kobject = kobject_create_and_add("clat", kernel_kobj);
+	if (!clat_kobject)
+		mif_err("clat: kobject_create failed ---\n");
+
+	if (sysfs_create_groups(clat_kobject, clat_groups))
+		mif_err("failed to create clat groups node\n");
+
+	err = cpif_init_clat_info();
+	if (err < 0)
+		mif_err("failed to initialize clat_info(%d)\n", err);
+
+	cpif_tethering_kobject = kobject_create_and_add("cpif_tethering", kernel_kobj);
+	if (!cpif_tethering_kobject)
+		mif_err("cpif_tethering: kobject_create failed ---\n");
+
+	if (sysfs_create_groups(cpif_tethering_kobject, cpif_tethering_groups))
+		mif_err("failed to create tethering groups node\n");
+
+	err = cpif_tethering_init();
+	if (err < 0)
+		mif_err("failed to initialize tethering_info(%d)\n", err);
+
+#ifdef CONFIG_MODEM_IF_LEGACY_QOS
+	cpif_qos_kobject = kobject_create_and_add("cpif_qos", kernel_kobj);
+	if (!cpif_qos_kobject)
+		mif_err("cpif_qos: kobject_create failed ---\n");
+
+	if (sysfs_create_groups(cpif_qos_kobject, cpif_qos_groups))
+		mif_err("failed to create cpif_qos groups node\n");
 	err = cpif_qos_init_list();
 	if (err < 0)
 		mif_err("failed to initialize hiprio list(%d)\n", err);
 #endif
 
-#if IS_ENABLED(CONFIG_EXYNOS_MEMORY_LOGGER)
-	cpif_init_memlog(pdev);
-#endif
+	err = mif_init_argos_notifier(modemctl);
+	if (err < 0)
+		mif_err("failed to initialize argos_notifier(%d)\n", err);
 
 	mif_err("%s: done ---\n", pdev->name);
 	return 0;
@@ -845,10 +1110,6 @@ free_iod:
 		}
 	}
 	kfree(iod);
-
-free_chrdev:
-	class_destroy(msd->cdev_class);
-	unregister_chrdev_region(MAJOR(msd->cdev_major), pdata->num_iodevs);
 
 free_mc:
 	if (modemctl)
@@ -871,31 +1132,38 @@ static void cpif_shutdown(struct platform_device *pdev)
 
 	mc->phone_state = STATE_OFFLINE;
 
+	kobject_put(clat_kobject);
+
 	mif_err("%s\n", mc->name);
 }
 
 static int modem_suspend(struct device *pdev)
 {
 	struct modem_ctl *mc = dev_get_drvdata(pdev);
+	int ret = 0;
 
 	if (mc->ops.suspend)
-		mc->ops.suspend(mc);
+		ret = mc->ops.suspend(mc);
 
+	mif_err("%s\n", mc->name);
 	set_wakeup_packet_log(true);
 
-	return 0;
+	return ret;
 }
 
 static int modem_resume(struct device *pdev)
 {
 	struct modem_ctl *mc = dev_get_drvdata(pdev);
+	int ret = 0;
 
 	set_wakeup_packet_log(false);
 
 	if (mc->ops.resume)
-		mc->ops.resume(mc);
+		ret = mc->ops.resume(mc);
 
-	return 0;
+	mif_err("%s\n", mc->name);
+
+	return ret;
 }
 
 static const struct dev_pm_ops cpif_pm_ops = {
@@ -910,7 +1178,7 @@ static struct platform_driver cpif_driver = {
 		.owner = THIS_MODULE,
 		.pm = &cpif_pm_ops,
 		.suppress_bind_attrs = true,
-#if IS_ENABLED(CONFIG_OF)
+#ifdef CONFIG_OF
 		.of_match_table = of_match_ptr(cpif_dt_match),
 #endif
 	},
