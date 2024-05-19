@@ -738,9 +738,12 @@ struct sec_ts_data {
 	u8 external_noise_mode;
 	volatile u8 touch_noise_status;
 	volatile u8 touch_pre_noise_status;
-	volatile bool input_closed;
 	bool fod_enabled;
 	long prox_power_off;
+
+	bool input_closed;
+	bool input_closed_fb;
+	volatile bool input_closed_node;
 
 	int touch_count;
 	int tx_count;
