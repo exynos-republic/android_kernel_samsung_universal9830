@@ -36,7 +36,7 @@
 #include <linux/time.h>
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>
-#include <linux/wakelock.h>
+//#include <linux/wakelock.h>
 #include <linux/workqueue.h>
 #include <linux/power_supply.h>
 
@@ -784,8 +784,8 @@ struct sec_ts_data {
 #endif
 #endif
 	struct completion resume_done;
-	struct wake_lock wakelock;
-	struct sec_cmd_data sec;
+	//struct wake_lock wakelock;
+	//struct sec_cmd_data sec;
 	short *pFrame;
 
 	bool probe_done;

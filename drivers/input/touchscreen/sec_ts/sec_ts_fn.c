@@ -11,6 +11,7 @@
  */
 
 #include "sec_ts.h"
+//#include "../../sec_input/sec_input.h"
 
 static void fw_update(void *device_data);
 static void get_fw_ver_bin(void *device_data);
