@@ -19,7 +19,7 @@
 #include <linux/debugfs.h>
 #include <linux/syscore_ops.h>
 #include <linux/suspend.h>
-#include <soc/samsung/exynos_pm_qos.h>
+#include <linux/pm_qos.h>
 #include <soc/samsung/cal-if.h>
 #include <dt-bindings/soc/samsung/exynos-bts.h>
 
@@ -30,12 +30,18 @@
 
 #define BTSDBG_LOG(x...)	if (btsdbg_log)	dev_notice(x)
 
+#define G3D01_QOS_BASE		0x1A021210
+#define G3D23_QOS_BASE		0x1A021230
+
 static bool btsdbg_log = false;
 
-static struct exynos_pm_qos_request exynos_mif_qos;
-static struct exynos_pm_qos_request exynos_int_qos;
+static struct pm_qos_request exynos_mif_qos;
+static struct pm_qos_request exynos_int_qos;
 
 static struct bts_device *btsdev;
+
+void __iomem *qos_va_base1;
+void __iomem *qos_va_base2;
 
 static void bts_calc_bw(void)
 {
@@ -43,7 +49,6 @@ static void bts_calc_bw(void)
 	unsigned int total_read = 0;
 	unsigned int total_write = 0;
 	unsigned int mif_freq, int_freq;
-	unsigned int mif_util = 65;
 
 	mutex_lock(&btsdev->mutex_lock);
 
@@ -64,23 +69,17 @@ static void bts_calc_bw(void)
 	if (btsdev->peak_bw < (total_write / NUM_CHANNEL))
 		btsdev->peak_bw = (total_write / NUM_CHANNEL);
 
-	if (btsdev->total_bw < 6489600)
-		mif_util = 40;
-	else if (btsdev->total_bw < 8923200)
-		mif_util = 45;
-	else if (btsdev->total_bw < 11897600)
-		mif_util = 55;
-
-	mif_freq = (btsdev->total_bw * 100) / MIF_BUS_WIDTH / mif_util;
+	mif_freq = (btsdev->total_bw * 100) / BUS_WIDTH / MIF_UTIL;
 	int_freq = (btsdev->peak_bw * 100) / BUS_WIDTH / INT_UTIL;
 
-	BTSDBG_LOG(btsdev->dev, "BW: T:%.8u R:%.8u W:%.8u P:%.8u MIF:%.8u INT:%.8u\n",
-			btsdev->total_bw, total_read, total_write, btsdev->peak_bw, mif_freq, int_freq);
+	BTSDBG_LOG(btsdev->dev, "[EN]:%d BW: T:%.8u R:%.8u W:%.8u P:%.8u MIF:%.8u INT:%.8u\n",
+			btsdev->calc_dis_cnt, btsdev->total_bw, total_read, total_write,
+			btsdev->peak_bw, mif_freq, int_freq);
 
-#if defined(CONFIG_EXYNOS_PM_QOS) || defined(CONFIG_EXYNOS_PM_QOS_MODULE)
-	exynos_pm_qos_update_request(&exynos_mif_qos, mif_freq);
-	exynos_pm_qos_update_request(&exynos_int_qos, int_freq);
-#endif
+	if (!btsdev->calc_dis_cnt) {
+		pm_qos_update_request(&exynos_mif_qos, mif_freq);
+		pm_qos_update_request(&exynos_int_qos, int_freq);
+	}
 
 	mutex_unlock(&btsdev->mutex_lock);
 }
@@ -200,6 +199,40 @@ int bts_update_bw(unsigned int index, struct bts_bw bw)
 }
 EXPORT_SYMBOL(bts_update_bw);
 
+void bts_calc_disable(unsigned int en)
+{
+	/* 0: enable, 1: disable */
+	spin_lock(&btsdev->lock);
+	if (en) {
+		btsdev->calc_dis_cnt++;
+		if (btsdev->calc_dis_cnt > 1) {
+			spin_unlock(&btsdev->lock);
+			return;
+		}
+	} else {
+		btsdev->calc_dis_cnt--;
+		if (btsdev->calc_dis_cnt > 0) {
+			spin_unlock(&btsdev->lock);
+			return;
+		} else if (btsdev->calc_dis_cnt < 0) {
+			dev_warn(btsdev->dev, "calc_dis_cnt is below 0!\n");
+			btsdev->calc_dis_cnt = 0;
+			spin_unlock(&btsdev->lock);
+			return;
+		}
+	}
+	spin_unlock(&btsdev->lock);
+
+	if (en) {
+		pm_qos_update_request(&exynos_mif_qos, 0);
+		pm_qos_update_request(&exynos_int_qos, 0);
+	} else {
+		bts_calc_bw();
+	}
+	dev_info(btsdev->dev, "bts_calc_bw function: %s\n", en ? "disabled" : "enabled");
+}
+EXPORT_SYMBOL(bts_calc_disable);
+
 int bts_add_scenario(unsigned int index)
 {
 	struct bts_scen *scen = btsdev->scen_list;
@@ -286,61 +319,6 @@ int bts_del_scenario(unsigned int index)
 }
 EXPORT_SYMBOL(bts_del_scenario);
 
-int bts_change_mo(unsigned int scen, unsigned int ip,
-		  unsigned int rmo, unsigned int wmo)
-{
-	struct bts_info *info = btsdev->bts_list;
-	struct bts_stat *stat;
-	unsigned int old_rmo = 0;
-	unsigned int old_wmo = 0;
-	int ret = 0;
-
-	if (ip >= btsdev->num_bts) {
-		pr_err("%s: IP ip should be in range of (0 ~ %d). input=(%d)\n",
-			__func__, btsdev->num_bts - 1, ip);
-		return -EINVAL;
-	}
-
-	if (scen >= btsdev->num_scen) {
-		pr_err("%s: SCEN ip should be in range of (0 ~ %d). input=(%d)\n",
-			__func__, btsdev->num_scen - 1, scen);
-		return -EINVAL;
-	}
-
-	stat = info[ip].stat;
-
-	spin_lock(&btsdev->lock);
-	if (stat[scen].rmo == rmo && stat[scen].wmo == wmo) {
-		pr_info("%s: requested same mo: rmo: %d, wmo: %d\n",
-				__func__, rmo, wmo);
-		goto out;
-	}
-
-	stat[scen].stat_on = true;
-	old_rmo = stat[scen].rmo;
-	old_wmo = stat[scen].wmo;
-	stat[scen].rmo = rmo;
-	stat[scen].wmo = wmo;
-
-	if (scen != btsdev->top_scen)
-		goto out;
-
-	if (info[ip].ops->set_mo != NULL) {
-		if (info[ip].pd_on) {
-			if (info[ip].ops->set_mo(info[ip].va_base, &stat[scen]))
-				pr_warn("%s: set_mo failed. input=(%d)\n",
-						__func__, ip);
-		}
-	}
-
-	pr_info("%s: scenario:%d, ip: %d, rmo: %d -> %d, wmo: %d -> %d\n",
-			__func__, scen, ip, old_rmo, rmo, old_wmo, wmo);
-out:
-	spin_unlock(&btsdev->lock);
-	return ret;
-}
-EXPORT_SYMBOL(bts_change_mo);
-
 /* DebugFS for BTS */
 static int exynos_bts_hwstatus_open_show(struct seq_file *buf, void *d)
 {
@@ -359,16 +337,16 @@ static int exynos_bts_hwstatus_open_show(struct seq_file *buf, void *d)
 		if (info.type == SCI_BTS)
 			stat = *(info.stat);
 
-		if (info.ops->get_bts != NULL && info.type == IP_BTS) {
+		if (info.ops->get_bts != NULL) {
 			spin_lock(&btsdev->lock);
 			ret = info.ops->get_bts(info.va_base, &stat);
 			spin_unlock(&btsdev->lock);
 
 			if (!ret) {
 				seq_printf(buf, "%s:\tARQOS 0x%X, AWQOS 0x%X, RMO 0x%.4X, WMO 0x%.4X, "\
-					"QUR(0x%X) TH_R 0x%.2X, TH_W 0x%.2X, ",
+					"QUR(%u) TH_R 0x%.2X, TH_W 0x%.2X, ",
 					info.name, stat.arqos, stat.awqos, stat.rmo, stat.wmo,
-					stat.qurgent_on, stat.qurgent_th_r, stat.qurgent_th_w);
+					(stat.qurgent_on ? 1 : 0), stat.qurgent_th_r, stat.qurgent_th_w);
 				if (stat.blocking_on)
 					seq_printf(buf, "BLK(1) FR 0x%.4X, FW 0x%.4X, BR 0x%.4X, BW 0x%.4X, "\
 							"MAX0_R 0x%.4X, MAX0_W 0x%.4X, MAX1_R 0x%.4X, MAX1_W 0x%.4X\n",
@@ -492,8 +470,8 @@ static ssize_t exynos_bts_qos_write(struct file *file, const char __user *user_b
 	ssize_t buf_size;
 
 	struct bts_info *info = btsdev->bts_list;
-	struct bts_stat *stat;
-	int ret, scen, index, bypass, ar, aw;
+	struct bts_stat stat;
+	int ret, index, bypass, ar, aw;
 
 	buf_size = simple_write_to_buffer(buf, sizeof(buf) - 1, ppos, user_buf, count);
 	if (buf_size < 0)
@@ -501,9 +479,9 @@ static ssize_t exynos_bts_qos_write(struct file *file, const char __user *user_b
 
 	buf[buf_size] = '\0';
 
-	ret = sscanf(buf, "%d %d %d %d %d\n", &scen, &index, &bypass, &ar, &aw);
-	if (ret != 5) {
-		pr_err("%s: sscanf failed. We need 5 inputs. <SCEN IP BYPASS(0/1) ARQOS AWQOS> count=(%d)\n",
+	ret = sscanf(buf, "%d %d %d %d\n", &index, &bypass, &ar, &aw);
+	if (ret != 4) {
+		pr_err("%s: sscanf failed. We need 4 inputs. <IP BYPASS(0/1) ARQOS AWQOS> count=(%d)\n",
 			__func__, ret);
 		return -EINVAL;
 	}
@@ -515,40 +493,26 @@ static ssize_t exynos_bts_qos_write(struct file *file, const char __user *user_b
 	}
 
 	if (info[index].type == SCI_BTS)
-		stat = info[index].stat;
+		stat = *(info[index].stat);
 
-	if (scen >= btsdev->num_scen) {
-		pr_err("%s: SCEN index should be in range of (0 ~ %d). input=(%d)\n",
-			__func__, btsdev->num_scen - 1, scen);
-		return -EINVAL;
-	}
+	if (bypass == 0)
+		stat.bypass = false;
+	else if (bypass == 1)
+		stat.bypass = true;
 
-	stat = info[index].stat;
+	stat.arqos = ar;
+	stat.awqos = aw;
 
 	spin_lock(&btsdev->lock);
 
-	stat[scen].stat_on = true;
-
-	if (bypass == 0)
-		stat[scen].bypass = false;
-	else if (bypass == 1)
-		stat[scen].bypass = true;
-
-	stat[scen].arqos = ar;
-	stat[scen].awqos = aw;
-
-	if (scen != btsdev->top_scen)
-		goto out;
-
 	if (info[index].ops->set_qos != NULL) {
 		if (info[index].pd_on) {
-			if (info[index].ops->set_qos(info[index].va_base, &stat[scen]))
+			if (info[index].ops->set_qos(info[index].va_base, &stat))
 				pr_warn("%s: set_qos failed. input=(%d) err=(%d)\n",
 						__func__, index, ret);
 		}
 	}
 
-out:
 	spin_unlock(&btsdev->lock);
 
 	return buf_size;
@@ -593,8 +557,8 @@ static ssize_t exynos_bts_mo_write(struct file *file, const char __user *user_bu
 	ssize_t buf_size;
 
 	struct bts_info *info = btsdev->bts_list;
-	struct bts_stat *stat;
-	int ret, scen, index, rmo, wmo;
+	struct bts_stat stat;
+	int ret, index, rmo, wmo;
 
 	buf_size = simple_write_to_buffer(buf, sizeof(buf) - 1, ppos, user_buf, count);
 	if (buf_size < 0)
@@ -602,9 +566,9 @@ static ssize_t exynos_bts_mo_write(struct file *file, const char __user *user_bu
 
 	buf[buf_size] = '\0';
 
-	ret = sscanf(buf, "%d %d %d %d\n", &scen, &index, &rmo, &wmo);
-	if (ret != 4) {
-		pr_err("%s: sscanf failed. We need 4 inputs. <SCEN IP RMO WMO> count=(%d)\n",
+	ret = sscanf(buf, "%d %d %d\n", &index, &rmo, &wmo);
+	if (ret != 3) {
+		pr_err("%s: sscanf failed. We need 3 inputs. <IP RMO WMO> count=(%d)\n",
 			__func__, ret);
 		return -EINVAL;
 	}
@@ -615,32 +579,19 @@ static ssize_t exynos_bts_mo_write(struct file *file, const char __user *user_bu
 		return -EINVAL;
 	}
 
-	if (scen >= btsdev->num_scen) {
-		pr_err("%s: SCEN index should be in range of (0 ~ %d). input=(%d)\n",
-			__func__, btsdev->num_scen - 1, scen);
-		return -EINVAL;
-	}
-
-	stat = info[index].stat;
+	stat.rmo = rmo;
+	stat.wmo = wmo;
 
 	spin_lock(&btsdev->lock);
 
-	stat[scen].stat_on = true;
-	stat[scen].rmo = rmo;
-	stat[scen].wmo = wmo;
-
-	if (scen != btsdev->top_scen)
-		goto out;
-
 	if (info[index].ops->set_mo != NULL) {
 		if (info[index].pd_on) {
-			if (info[index].ops->set_mo(info[index].va_base, &stat[scen]))
+			if (info[index].ops->set_mo(info[index].va_base, &stat))
 				pr_warn("%s: set_mo failed. input=(%d) err=(%d)\n",
 						__func__, index, ret);
 		}
 	}
 
-out:
 	spin_unlock(&btsdev->lock);
 
 	return buf_size;
@@ -660,8 +611,8 @@ static int exynos_bts_urgent_open_show(struct seq_file *buf, void *d)
 
 		if (info[i].pd_on) {
 			ret = info[i].ops->get_urgent(info[i].va_base, &stat);
-			seq_printf(buf, "[%d] %s:   \tQUR(0x%X) TH_R 0x%.2X TH_W 0x%.2X\n",
-					i, info[i].name, stat.qurgent_on, stat.qurgent_th_r, stat.qurgent_th_w);
+			seq_printf(buf, "[%d] %s:   \tQUR(%u) TH_R 0x%.2X TH_W 0x%.2X\n",
+					i, info[i].name, (stat.qurgent_on ? 1 : 0), stat.qurgent_th_r, stat.qurgent_th_w);
 		} else {
 			seq_printf(buf, "[%d] %s:   \tLocal power off!\n",
 					i, info[i].name);
@@ -685,8 +636,8 @@ static ssize_t exynos_bts_urgent_write(struct file *file, const char __user *use
 	ssize_t buf_size;
 
 	struct bts_info *info = btsdev->bts_list;
-	struct bts_stat *stat;
-	int ret, scen, index, on, th_r, th_w;
+	struct bts_stat stat;
+	int ret, index, on, th_r, th_w;
 
 	buf_size = simple_write_to_buffer(buf, sizeof(buf) - 1, ppos, user_buf, count);
 	if (buf_size < 0)
@@ -694,9 +645,9 @@ static ssize_t exynos_bts_urgent_write(struct file *file, const char __user *use
 
 	buf[buf_size] = '\0';
 
-	ret = sscanf(buf, "%d %d %d %d %d\n", &scen, &index, &on, &th_r, &th_w);
-	if (ret != 5) {
-		pr_err("%s: sscanf failed. We need 5 inputs. <SCEN IP ON/OFF TH_R TH_W> count=(%d)\n",
+	ret = sscanf(buf, "%d %d %d %d\n", &index, &on, &th_r, &th_w);
+	if (ret != 4) {
+		pr_err("%s: sscanf failed. We need 4 inputs. <IP ON/OFF TH_R TH_W> count=(%d)\n",
 			__func__, ret);
 		return -EINVAL;
 	}
@@ -707,33 +658,20 @@ static ssize_t exynos_bts_urgent_write(struct file *file, const char __user *use
 		return -EINVAL;
 	}
 
-	if (scen >= btsdev->num_scen) {
-		pr_err("%s: SCEN index should be in range of (0 ~ %d). input=(%d)\n",
-			__func__, btsdev->num_scen - 1, scen);
-		return -EINVAL;
-	}
-
-	stat = info[index].stat;
+	stat.qurgent_on = on;
+	stat.qurgent_th_r = th_r;
+	stat.qurgent_th_w = th_w;
 
 	spin_lock(&btsdev->lock);
 
-	stat[scen].stat_on = true;
-	stat[scen].qurgent_on = on;
-	stat[scen].qurgent_th_r = th_r;
-	stat[scen].qurgent_th_w = th_w;
-
-	if (scen != btsdev->top_scen)
-		goto out;
-
 	if (info[index].ops->set_urgent != NULL) {
 		if (info[index].pd_on) {
-			if (info[index].ops->set_urgent(info[index].va_base, &stat[scen]))
+			if (info[index].ops->set_urgent(info[index].va_base, &stat))
 				pr_warn("%s: set_urgent failed. input=(%d) err=(%d)\n",
 						__func__, index, ret);
 		}
 	}
 
-out:
 	spin_unlock(&btsdev->lock);
 
 	return buf_size;
@@ -785,9 +723,8 @@ static ssize_t exynos_bts_blocking_write(struct file *file, const char __user *u
 	ssize_t buf_size;
 
 	struct bts_info *info = btsdev->bts_list;
-	struct bts_stat *stat;
-	int ret;
-	int scen, index, on, full_r, full_w, busy_r, busy_w, max0_r, max0_w, max1_r, max1_w;
+	struct bts_stat stat;
+	int ret, index, on, full_r, full_w, busy_r, busy_w, max0_r, max0_w, max1_r, max1_w;
 
 	buf_size = simple_write_to_buffer(buf, sizeof(buf) - 1, ppos, user_buf, count);
 	if (buf_size < 0)
@@ -795,12 +732,12 @@ static ssize_t exynos_bts_blocking_write(struct file *file, const char __user *u
 
 	buf[buf_size] = '\0';
 
-	ret = sscanf(buf, "%d %d %d %d %d %d %d %d %d %d %d\n",
-			&scen, &index, &on, &full_r, &full_w, &busy_r, &busy_w,
+	ret = sscanf(buf, "%d %d %d %d %d %d %d %d %d %d\n",
+			&index, &on, &full_r, &full_w, &busy_r, &busy_w,
 			&max0_r, &max0_w, &max1_r, &max1_w);
 
-	if (ret != 11) {
-		pr_err("%s: sscanf failed. We need 11 inputs. <SCEN IP ON/OFF FULL_R, FULL_W, BUSY_R, BUSY_W, "\
+	if (ret != 10) {
+		pr_err("%s: sscanf failed. We need 10 inputs. <IP ON/OFF FULL_R, FULL_W, BUSY_R, BUSY_W, "\
 				"MAX0_R, MAX0_W, MAX1_R, MAX1_W count=(%d)\n", __func__, ret);
 		return -EINVAL;
 	}
@@ -811,39 +748,26 @@ static ssize_t exynos_bts_blocking_write(struct file *file, const char __user *u
 		return -EINVAL;
 	}
 
-	if (scen >= btsdev->num_scen) {
-		pr_err("%s: SCEN index should be in range of (0 ~ %d). input=(%d)\n",
-			__func__, btsdev->num_scen - 1, scen);
-		return -EINVAL;
-	}
-
-	stat = info[index].stat;
+	stat.blocking_on = on;
+	stat.qfull_limit_r = full_r;
+	stat.qfull_limit_w = full_w;
+	stat.qbusy_limit_r = busy_r;
+	stat.qbusy_limit_w = busy_w;
+	stat.qmax0_limit_r = max0_r;
+	stat.qmax0_limit_w = max0_w;
+	stat.qmax1_limit_r = max1_r;
+	stat.qmax1_limit_w = max1_w;
 
 	spin_lock(&btsdev->lock);
 
-	stat[scen].stat_on = true;
-	stat[scen].blocking_on = on;
-	stat[scen].qfull_limit_r = full_r;
-	stat[scen].qfull_limit_w = full_w;
-	stat[scen].qbusy_limit_r = busy_r;
-	stat[scen].qbusy_limit_w = busy_w;
-	stat[scen].qmax0_limit_r = max0_r;
-	stat[scen].qmax0_limit_w = max0_w;
-	stat[scen].qmax1_limit_r = max1_r;
-	stat[scen].qmax1_limit_w = max1_w;
-
-	if (scen != btsdev->top_scen)
-		goto out;
-
 	if (info[index].ops->set_blocking != NULL) {
 		if (info[index].pd_on) {
-			if (info[index].ops->set_blocking(info[index].va_base, &stat[scen]))
+			if (info[index].ops->set_blocking(info[index].va_base, &stat))
 				pr_warn("%s: set_blocking failed. input=(%d) err=(%d)\n",
 						__func__, index, ret);
 		}
 	}
 
-out:
 	spin_unlock(&btsdev->lock);
 
 	return buf_size;
@@ -1026,9 +950,7 @@ static int bts_parse_setting(struct device_node *np, struct bts_stat *stat)
 	int tmp = 0;
 
 	of_property_read_u32(np, "stat_on", &tmp);
-	spin_lock(&btsdev->lock);
 	stat->stat_on = tmp ? true : false;
-	spin_unlock(&btsdev->lock);
 
 	/* Initialize */
 	if (stat->stat_on) {
@@ -1044,7 +966,8 @@ static int bts_parse_setting(struct device_node *np, struct bts_stat *stat)
 		if (of_property_read_u32(np, "wmo", &(stat->wmo)))
 			stat->wmo = MAX_MO;
 
-		of_property_read_u32(np, "qurgent_on", &(stat->qurgent_on));
+		of_property_read_u32(np, "qurgent_on", &tmp);
+		stat->qurgent_on = tmp ? true : false;
 
 		if (of_property_read_u32(np, "qurgent_th_r", &(stat->qurgent_th_r)))
 			stat->qurgent_th_r = MAX_QUTH;
@@ -1070,10 +993,6 @@ static int bts_parse_setting(struct device_node *np, struct bts_stat *stat)
 			stat->qmax1_limit_r = MAX_MO;
 		if (of_property_read_u32(np, "qmax1_limit_w", &(stat->qmax1_limit_w)))
 			stat->qmax1_limit_w = MAX_MO;
-
-		/* Parsing vc-cfg */
-		if (of_property_read_u32(np, "vc-cfg", &(stat->vc_cfg)))
-			stat->vc_cfg = 0;
 	}
 
 	return 0;
@@ -1090,8 +1009,8 @@ static int bts_parse_data(struct device_node *np, struct bts_device *data)
 	int ret = 0;
 
 	if (of_have_populated_dt()) {
-		data->num_scen = of_property_count_strings(np, "list-scen");
-		if (data->num_scen <= 0) {
+		data->num_scen = (unsigned int)of_property_count_strings(np, "list-scen");
+		if (!data->num_scen) {
 			BTSDBG_LOG(data->dev, "There should be at least one scenario\n");
 			ret = -EINVAL;
 			goto err;
@@ -1130,13 +1049,6 @@ static int bts_parse_data(struct device_node *np, struct bts_device *data)
 		i = 0;
 
 		for_each_child_of_node(np, child_np) {
-			/* Parsing scenario data */
-			info[i].stat = devm_kcalloc(data->dev, data->num_scen, sizeof(struct bts_stat), GFP_KERNEL);
-			if (info[i].stat == NULL) {
-				ret = -ENOMEM;
-				goto err;
-			}
-
 			/* IOREMAP physical address */
 			ret = of_address_to_resource(child_np, 0, &res);
 			if (ret) {
@@ -1148,14 +1060,6 @@ static int bts_parse_data(struct device_node *np, struct bts_device *data)
 				if (IS_ERR(info[i].va_base)) {
 					dev_err(data->dev, "failed to ioremap register\n");
 						ret = -ENOMEM;
-				}
-				ret = of_address_to_resource(child_np, 1, &res);
-				if (!ret) {
-					info[i].stat->qos_va_base = devm_ioremap_resource(data->dev, &res);
-					if (IS_ERR(info[i].stat->qos_va_base)) {
-						dev_err(data->dev, "failed to ioremap register\n");
-						ret = -ENOMEM;
-					}
 				}
 			}
 
@@ -1188,10 +1092,18 @@ static int bts_parse_data(struct device_node *np, struct bts_device *data)
 				continue;
 			}
 
-			spin_lock(&btsdev->lock);
+			/* Parsing scenario data */
+			info[i].stat = devm_kcalloc(data->dev, data->num_scen, sizeof(struct bts_stat), GFP_KERNEL);
+			if (info[i].stat == NULL) {
+				ret = -ENOMEM;
+				goto err;
+			}
 			for (j = 0; j < data->num_scen; j++)
 				info[i].stat[j].stat_on = 0;
-			spin_unlock(&btsdev->lock);
+
+			/* Parsing qos-reg */
+			if (of_property_read_u32(child_np, "qos-num", &(info[i].stat->qos_num)))
+				info[i].stat->qos_num = 0;
 
 			for_each_child_of_node(child_np, snp) {
 				for (j = 0; j < data->num_scen; j++) {
@@ -1229,15 +1141,19 @@ static int bts_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	btsdev->dev = &pdev->dev;
+	btsdev->calc_dis_cnt = 0;
+
+	qos_va_base1 = devm_ioremap(btsdev->dev, G3D01_QOS_BASE, SZ_1K);
+	qos_va_base2 = devm_ioremap(btsdev->dev, G3D23_QOS_BASE, SZ_1K);
 
 	if (strcmp(pdev->name, "exynos-bts") == 0) {
-		spin_lock_init(&btsdev->lock);
 		ret = bts_parse_data(btsdev->dev->of_node, btsdev);
 		if (ret) {
 			dev_err(btsdev->dev, "failed to parse data (err=%d)\n", ret);
 			devm_kfree(btsdev->dev, btsdev);
 			return ret;
 		}
+		spin_lock_init(&btsdev->lock);
 		mutex_init(&btsdev->mutex_lock);
 		INIT_LIST_HEAD(&btsdev->scen_node);
 
@@ -1253,16 +1169,12 @@ static int bts_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, btsdev);
 
-#if defined(CONFIG_EXYNOS_PM_QOS) || defined(CONFIG_EXYNOS_PM_QOS_MODULE)
-	exynos_pm_qos_add_request(&exynos_mif_qos, PM_QOS_BUS_THROUGHPUT, 0);
-	exynos_pm_qos_add_request(&exynos_int_qos, PM_QOS_DEVICE_THROUGHPUT, 0);
-#endif
+	pm_qos_add_request(&exynos_mif_qos, PM_QOS_BUS_THROUGHPUT, 0);
+	pm_qos_add_request(&exynos_int_qos, PM_QOS_DEVICE_THROUGHPUT, 0);
 
-#if defined(CONFIG_DEBUG_FS) || defined(CONFIG_DEBUG_FS_MODULE)
 	ret = exynos_bts_debugfs_init();
 	if (ret)
 		dev_err(btsdev->dev, "exynos_bts_debugfs_init failed\n");
-#endif
 
 	register_syscore_ops(&exynos_bts_syscore_ops);
 
@@ -1284,20 +1196,19 @@ static const struct of_device_id exynos_bts_match[] = {
 	{
 		.compatible = "samsung,exynos-bts",
 	},
-	{},
 };
-MODULE_DEVICE_TABLE(of, exynos_bts_match);
 
 static struct platform_driver bts_pdrv = {
 	.probe			= bts_probe,
 	.remove			= bts_remove,
 	.driver			= {
 		.name		= BTS_PDEV_NAME,
+		.owner		= THIS_MODULE,
 		.of_match_table	= exynos_bts_match,
 	},
 };
 
-static int exynos_bts_init(void)
+static int __init exynos_bts_init(void)
 {
 	int ret = 0;
 
@@ -1312,5 +1223,3 @@ static int exynos_bts_init(void)
 	return 0;
 }
 arch_initcall(exynos_bts_init);
-
-MODULE_LICENSE("GPL");

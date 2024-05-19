@@ -24,9 +24,7 @@
 #include <soc/samsung/bts.h>
 
 #define NUM_CHANNEL	4
-#define MIF_BUS_WIDTH	16
-#define BUS_WIDTH	32
-#define MIF_BUS_WIDTH  16
+#define BUS_WIDTH	16
 #define MIF_UTIL	65
 #define INT_UTIL	70
 
@@ -56,6 +54,7 @@ struct bts_info;
  * @bts_bw:	struct bts_bw * - struct for saving bandwidth information
  * @peak_bw:	currently max bandwidth
  * @total_bw:	current total bandwidth
+ * @calc_dis:   boolean value whether using calc API
  *
  * This structure stores basic BTS information for QoS control
  *
@@ -79,6 +78,7 @@ struct bts_device {
 	struct bts_bw		*bts_bw;
 	unsigned int		peak_bw;
 	unsigned int		total_bw;
+	int			calc_dis_cnt;
 };
 
 /**
@@ -156,7 +156,7 @@ struct bts_stat {
 	unsigned int		awqos;
 	unsigned int		rmo;
 	unsigned int		wmo;
-	unsigned int		qurgent_on;
+	bool			qurgent_on;
 	unsigned int		qurgent_th_r;
 	unsigned int		qurgent_th_w;
 	bool			blocking_on;
@@ -168,8 +168,7 @@ struct bts_stat {
 	unsigned int		qmax0_limit_w;
 	unsigned int		qmax1_limit_r;
 	unsigned int		qmax1_limit_w;
-	unsigned int		vc_cfg;
-	void __iomem		*qos_va_base;
+	int			qos_num;
 };
 
 

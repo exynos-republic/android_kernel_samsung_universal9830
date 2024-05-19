@@ -13,8 +13,11 @@
 #include <linux/io.h>
 #include <dt-bindings/soc/samsung/exynos-bts.h>
 
-#include "regs-bts2100.h"
+#include "regs-bts9830.h"
 #include "bts.h"
+
+extern void __iomem *qos_va_base1;
+extern void __iomem *qos_va_base2;
 
 /****************************************************************
  *			init ops functions			*
@@ -32,10 +35,10 @@ static void init_trexbts(void __iomem *base)
 	__raw_writel(w1, base + SCI_CTRL);
 
 	__raw_writel(0x10101010, base + TH_IMM_R_0);
-	__raw_writel(0x18181818, base + TH_IMM_W_0);
+	__raw_writel(0x10FF1010, base + TH_IMM_W_0);
 
-	__raw_writel(0x10101010, base + TH_HIGH_R_0);
-	__raw_writel(0x18181818, base + TH_HIGH_W_0);
+	__raw_writel(0x08080808, base + TH_HIGH_R_0);
+	__raw_writel(0x08FF0808, base + TH_HIGH_W_0);
 }
 
 static void init_sciqfull(void __iomem *base)
@@ -56,8 +59,8 @@ static void init_smcqbusy(void __iomem *base)
 	tmp_reg = __raw_readl(base + SMC_SCHEDCTL_BUNDLE_CTRL4);
 	tmp_reg &= ~(0x3F << 16);
 	tmp_reg &= ~(0x3F << 24);
-	tmp_reg |= (threshold << 16); //W
-	tmp_reg |= (threshold << 24); //R
+	tmp_reg |= (threshold << 16);
+	tmp_reg |= (threshold << 24);
 
 	__raw_writel(tmp_reg, base + SMC_SCHEDCTL_BUNDLE_CTRL4);
 }
@@ -226,26 +229,6 @@ static int get_ipbts_mo(void __iomem *base, struct bts_stat *stat)
 	return 0;
 }
 
-static void vc_cfg_setting(void __iomem *base)
-{
-	__raw_writel(0xf, base + VC_CFG_USER_MASK_LOW_0);
-	__raw_writel(0xf, base + VC_CFG_USER_MASK_LOW_1);
-	__raw_writel(0x1f, base + VC_CFG_USER_MASK_LOW_2);
-	__raw_writel(0x1f, base + VC_CFG_USER_MASK_LOW_3);
-	__raw_writel(0x4, base + VC_CFG_USER_VAL_0);
-	__raw_writel(0x8, base + VC_CFG_USER_VAL_1);
-	__raw_writel(0xC, base + VC_CFG_USER_VAL_2);
-	__raw_writel(0x10, base + VC_CFG_USER_VAL_3);
-	__raw_writel(0x13, base + VC_CFG_DOMAIN_0);
-	__raw_writel(0x13, base + VC_CFG_DOMAIN_1);
-	__raw_writel(0x13, base + VC_CFG_DOMAIN_2);
-	__raw_writel(0x13, base + VC_CFG_DOMAIN_3);
-	__raw_writel(0x4111, base + VC_CFG_VC_VAL_0);
-	__raw_writel(0x4111, base + VC_CFG_VC_VAL_1);
-	__raw_writel(0x4111, base + VC_CFG_VC_VAL_2);
-	__raw_writel(0x4111, base + VC_CFG_VC_VAL_3);
-}
-
 static int set_ipbts_urgent(void __iomem *base, struct bts_stat *stat)
 {
 	unsigned int tmp_reg = 0;
@@ -258,41 +241,17 @@ static int set_ipbts_urgent(void __iomem *base, struct bts_stat *stat)
 	if (stat->qurgent_th_w > MAX_QUTH)
 		stat->qurgent_th_w = MAX_QUTH;
 
-	/* Read QUrgent */
-	tmp_reg = __raw_readl(base + TIMEOUT_R0);
-	tmp_reg = tmp_reg & ~((MAX_QUTH << TIMEOUT_CNT_VC0)
-			| (MAX_QUTH << TIMEOUT_CNT_VC1)
-			| (MAX_QUTH << TIMEOUT_CNT_VC2)
-			| (MAX_QUTH << TIMEOUT_CNT_VC3));
-	tmp_reg = tmp_reg | (stat->qurgent_th_r << TIMEOUT_CNT_VC0)
-		| (stat->qurgent_th_r << TIMEOUT_CNT_VC1)
-		| (stat->qurgent_th_r << TIMEOUT_CNT_VC2)
-		| (stat->qurgent_th_r << TIMEOUT_CNT_VC3);
+	tmp_reg = __raw_readl(base + TIMEOUT);
+	tmp_reg = tmp_reg & ~((MAX_QUTH << TIMEOUT_CNT_R) | (MAX_QUTH << TIMEOUT_CNT_W));
+	tmp_reg = tmp_reg | (stat->qurgent_th_r << TIMEOUT_CNT_R) | (stat->qurgent_th_w << TIMEOUT_CNT_W);
 
-	__raw_writel(tmp_reg, base + TIMEOUT_R0);
-
-	/* Write QUrgent */
-	tmp_reg = __raw_readl(base + TIMEOUT_W0);
-	tmp_reg = tmp_reg & ~((MAX_QUTH << TIMEOUT_CNT_VC0)
-			| (MAX_QUTH << TIMEOUT_CNT_VC1)
-			| (MAX_QUTH << TIMEOUT_CNT_VC2)
-			| (MAX_QUTH << TIMEOUT_CNT_VC3));
-
-	tmp_reg = tmp_reg | (stat->qurgent_th_w << TIMEOUT_CNT_VC0)
-		| (stat->qurgent_th_w << TIMEOUT_CNT_VC1)
-		| (stat->qurgent_th_w << TIMEOUT_CNT_VC2)
-		| (stat->qurgent_th_w << TIMEOUT_CNT_VC3);
-
-	__raw_writel(tmp_reg, base + TIMEOUT_W0);
+	__raw_writel(tmp_reg, base + TIMEOUT);
 
 	tmp_reg = __raw_readl(base + CON);
-	tmp_reg = tmp_reg & ~(0xFF << QURGENT_EN);
+	tmp_reg = tmp_reg & ~(0x1 << QURGENT_EN);
 
 	if (stat->qurgent_on)
-		tmp_reg = tmp_reg | (stat->qurgent_on << QURGENT_EN);
-
-	if (stat->vc_cfg)
-		vc_cfg_setting(base);
+		tmp_reg = tmp_reg | (0x1 << QURGENT_EN);
 
 	__raw_writel(tmp_reg, base + CON);
 
@@ -306,13 +265,12 @@ static int get_ipbts_urgent(void __iomem *base, struct bts_stat *stat)
 	if (!base || !stat)
 		return -ENODATA;
 
-	tmp_reg = __raw_readl(base + TIMEOUT_R0);
-	stat->qurgent_th_r = (tmp_reg & (MAX_QUTH << TIMEOUT_CNT_VC0)) >> TIMEOUT_CNT_VC0;
-	tmp_reg = __raw_readl(base + TIMEOUT_W0);
-	stat->qurgent_th_w = (tmp_reg & (MAX_QUTH << TIMEOUT_CNT_VC0)) >> TIMEOUT_CNT_VC0;
+	tmp_reg = __raw_readl(base + TIMEOUT);
+	stat->qurgent_th_r = (tmp_reg & (MAX_QUTH << TIMEOUT_CNT_R)) >> TIMEOUT_CNT_R;
+	stat->qurgent_th_w = (tmp_reg & (MAX_QUTH << TIMEOUT_CNT_W)) >> TIMEOUT_CNT_W;
 
 	tmp_reg = __raw_readl(base + CON);
-	stat->qurgent_on = (tmp_reg & (0xFF << QURGENT_EN)) >> QURGENT_EN;
+	stat->qurgent_on = (tmp_reg & (0x1 << QURGENT_EN)) >> QURGENT_EN;
 
 	return 0;
 }
@@ -516,13 +474,14 @@ static int set_scibts_mo(void __iomem *base, struct bts_stat *stat)
 		stat->wmo = MAX_MO;
 
 	/*
-	 * CRP_CTL3_X (Olympus 0~3)
-	 * MaxOutstandingPort0Rd	[7:0]	(Olympus cpu use 0/3, not use 1/2)
-	 * MaxOutstandingPort0Wr	[15:8]	(Olympus cpu use 0/3, not use 1/2)
-	 * MaxOutstandingPort1Rd	[23:16]	(Olympus gpu use 0/1/2/3)
-	 * MaxOutstandingPort1Wr	[31:24]	(Olympus gpu use 0/1/2/3)
+	 * CRP_CTL3_X
+	 * MaxOutstandingPort0Rd	[7:0]
+	 * MaxOutstandingPort0Wr	[15:8]
+	 * MaxOutstandingPort1Rd	[23:16]
+	 * MaxOutstandingPort1Wr	[31:24]
 	 */
-	tmp_reg = stat->rmo << RMO_PORT_1 | stat->wmo << WMO_PORT_1;
+	tmp_reg = stat->rmo << RMO_PORT_0 | stat->rmo << RMO_PORT_1 |
+		stat->wmo << WMO_PORT_0 | stat -> wmo << WMO_PORT_1;
 
 	__raw_writel(tmp_reg, base);
 
@@ -540,8 +499,8 @@ static int get_scibts_mo(void __iomem *base, struct bts_stat *stat)
 
 	tmp_reg = __raw_readl(base);
 
-	tmp_reg_r = (tmp_reg & (0xFF << RMO_PORT_1)) >> RMO_PORT_1;
-	tmp_reg_w = (tmp_reg & (0xFF << WMO_PORT_1)) >> WMO_PORT_1;
+	tmp_reg_r = (tmp_reg & (0xFF << RMO_PORT_0)) >> RMO_PORT_0;
+	tmp_reg_w = (tmp_reg & (0xFF << WMO_PORT_0)) >> WMO_PORT_0;
 
 	stat->rmo = tmp_reg_r;
 	stat->wmo = tmp_reg_w;
@@ -549,29 +508,58 @@ static int get_scibts_mo(void __iomem *base, struct bts_stat *stat)
 	return 0;
 }
 
+#ifdef CONFIG_SOC_EXYNOS9830_EVT0
+static inline
+int set_scibts_qos(void __iomem *base, struct bts_stat *stat)
+{
+	return 0;
+}
+
+static inline
+int get_scibts_qos(void __iomem *base, struct bts_stat *stat)
+{
+	return 0;
+}
+#else /* CONFIG_EXYNOS9830_EVT0 */
+
 static int set_scibts_qos(void __iomem *base, struct bts_stat *stat)
 {
 	unsigned int tmp_reg = 0;
-	void __iomem *qos_base = NULL;
+	void __iomem *temp = NULL;
 
 	if (!stat)
 		return -ENODATA;
 
-	qos_base = stat->qos_va_base;
+	if (stat->qos_num < 1)
+		return 0;
 
-	if (!qos_base)
+	if (stat->qos_num == 1) {
+		temp = qos_va_base1;
+	} else if (stat->qos_num == 2) {
+		temp = qos_va_base2;
+	}
+
+	if (temp == NULL)
 		return 0;
 
 	/* QoS on */
 	if (stat->arqos || stat->awqos) { /* on */
-		tmp_reg = __raw_readl(qos_base + CORE_QOS_EN);
+		tmp_reg = __raw_readl(temp + CORE_QOS_EN);
 		tmp_reg = tmp_reg | (0x1 << SCIQOS_EN);
-		__raw_writel(tmp_reg, qos_base + CORE_QOS_EN);
+		__raw_writel(tmp_reg, temp + CORE_QOS_EN);
+
+		tmp_reg = __raw_readl(temp + CORE_QOS_EN + CORE_QOS_BLK);
+		tmp_reg = tmp_reg | (0x1 << SCIQOS_EN);
+		__raw_writel(tmp_reg, temp + CORE_QOS_EN + CORE_QOS_BLK);
 	} else {
 		/* QoS off */
-		tmp_reg = __raw_readl(qos_base + CORE_QOS_EN);
+		tmp_reg = __raw_readl(temp + CORE_QOS_EN);
 		tmp_reg = tmp_reg & ~(0x1 << SCIQOS_EN);
-		__raw_writel(tmp_reg, qos_base + CORE_QOS_EN);
+		__raw_writel(tmp_reg, temp + CORE_QOS_EN);
+
+		tmp_reg = __raw_readl(temp + CORE_QOS_EN + CORE_QOS_BLK);
+		tmp_reg = tmp_reg & ~(0x1 << SCIQOS_EN);
+		__raw_writel(tmp_reg, temp + CORE_QOS_EN + CORE_QOS_BLK);
 	}
 
 	if (stat->arqos > SCIMAX_QOS)
@@ -581,11 +569,12 @@ static int set_scibts_qos(void __iomem *base, struct bts_stat *stat)
 		stat->awqos = SCIMAX_QOS;
 
 	/* AxQoS value */
-	tmp_reg = __raw_readl(qos_base);
+	tmp_reg = __raw_readl(temp);
 	tmp_reg = tmp_reg & ~((SCIMAX_QOS << SCIQOS_W)| (SCIMAX_QOS << SCIQOS_R));
 	tmp_reg = tmp_reg | (stat->arqos << SCIQOS_R) | (stat->awqos << SCIQOS_W);
 
-	__raw_writel(tmp_reg, qos_base);
+	__raw_writel(tmp_reg, temp);
+	__raw_writel(tmp_reg, temp + CORE_QOS_BLK);
 
 	return 0;
 }
@@ -595,17 +584,24 @@ static int get_scibts_qos(void __iomem *base, struct bts_stat *stat)
 	unsigned int tmp_reg = 0;
 	unsigned int tmp_reg_r = 0;
 	unsigned int tmp_reg_w = 0;
-	void __iomem *qos_base = NULL;
+	void __iomem *temp = NULL;
 
 	if (!stat)
 		return -ENODATA;
 
-	qos_base = stat->qos_va_base;
-
-	if (!qos_base)
+	if (stat->qos_num < 1)
 		return 0;
 
-	tmp_reg = __raw_readl(qos_base + CORE_QOS_EN);
+	if (stat->qos_num == 1) {
+		temp = qos_va_base1;
+	} else if (stat->qos_num == 2) {
+		temp = qos_va_base2;
+	}
+
+	if (temp == NULL)
+		return 0;
+
+	tmp_reg = __raw_readl(temp + CORE_QOS_EN);
 	tmp_reg = (tmp_reg & (0x1 << SCIQOS_EN)) >> SCIQOS_EN;
 
 	if (tmp_reg)
@@ -613,10 +609,10 @@ static int get_scibts_qos(void __iomem *base, struct bts_stat *stat)
 	else
 		stat->bypass = true;
 
-	tmp_reg_w = __raw_readl(qos_base);
+	tmp_reg_w = __raw_readl(temp);
 	tmp_reg_w = (tmp_reg_w & (SCIMAX_QOS << SCIQOS_W)) >> SCIQOS_W;
 
-	tmp_reg_r = __raw_readl(qos_base);
+	tmp_reg_r = __raw_readl(temp);
 	tmp_reg_r = (tmp_reg_r & (SCIMAX_QOS << SCIQOS_R)) >> SCIQOS_R;
 
 	stat->arqos = tmp_reg_r;
@@ -624,6 +620,7 @@ static int get_scibts_qos(void __iomem *base, struct bts_stat *stat)
 
 	return 0;
 }
+#endif /* CONFIG_EXYNOS9830_EVT0 */
 
 static int set_scibts(void __iomem *base, struct bts_stat *stat)
 {
@@ -635,15 +632,17 @@ static int set_scibts(void __iomem *base, struct bts_stat *stat)
 	if (!stat->stat_on)
 		return 0;
 
+#ifndef CONFIG_SOC_EXYNOS9830_EVT0
 	ret = set_scibts_qos(base, stat);
 	if (ret) {
-		pr_err("set_scibts_qos failed! ret=%d\n", ret);
+		pr_err("set_ipbts_mo failed! ret=%d\n", ret);
 		return ret;
 	}
+#endif
 
 	ret = set_scibts_mo(base, stat);
 	if (ret) {
-		pr_err("set_scibts_mo failed! ret=%d\n", ret);
+		pr_err("set_ipbts_mo failed! ret=%d\n", ret);
 		return ret;
 	}
 
@@ -657,18 +656,19 @@ static int get_scibts(void __iomem *base, struct bts_stat *stat)
 	if (!base || !stat)
 		return -ENODATA;
 
-	ret = get_scibts_qos(base, stat);
-	if (ret) {
-		pr_err("get_scibts_qos failed! ret=%d\n", ret);
-		return ret;
-	}
-
 	ret = get_scibts_mo(base, stat);
 	if (ret) {
-		pr_err("get_scibts_mo failed! ret=%d\n", ret);
+		pr_err("get_ipbts_mo failed! ret=%d\n", ret);
 		return ret;
 	}
 
+#ifndef CONFIG_SOC_EXYNOS9830_EVT0
+	ret = get_scibts_qos(base, stat);
+	if (ret) {
+		pr_err("get_ipbts_mo failed! ret=%d\n", ret);
+		return ret;
+	}
+#endif
 	return 0;
 }
 
@@ -781,6 +781,3 @@ int register_btsops(struct bts_info *info)
 
 	return 0;
 }
-EXPORT_SYMBOL(register_btsops);
-
-MODULE_LICENSE("GPL");
