@@ -17,6 +17,7 @@
 #include <linux/io.h>
 #include <linux/sched/clock.h>
 #include <linux/math64.h>
+#include <linux/slab.h>
 
 #include "exynos-ppc.h"
 
@@ -137,7 +138,7 @@ ktime_t exynos_devfreq_get_ppc_status(struct exynos_devfreq_data *data)
 	for (i = 0; i < data->um_data.um_count; i++)
 		exynos_start_ppc(data->um_data.va_base[i]);
 
-	cur_time = ktime_get();
+	cur_time = sched_clock();
 	active_time = (cur_time - last_updated_time) * (max_pmcnt + ppc_dvfs_total_pmcnt_alt - ppc_dvfs_total_pmcnt) / (max_ccnt + ppc_dvfs_total_ccnt_alt - ppc_dvfs_total_ccnt);
 
 	ppc_dvfs_total_pmcnt = max_pmcnt + ppc_dvfs_total_pmcnt_alt;
@@ -154,6 +155,7 @@ static int exynos_devfreq_get_dev_status(struct device *dev, struct devfreq_dev_
 {
 	struct platform_device *pdev = container_of(dev, struct platform_device, dev);
 	struct exynos_devfreq_data *data = platform_get_drvdata(pdev);
+	struct exynos_profile_data *profile_data = (struct exynos_profile_data *)stat->private_data;
 	u64 cur_time;
 	int i;
 
@@ -172,12 +174,12 @@ static int exynos_devfreq_get_dev_status(struct device *dev, struct devfreq_dev_
 	/* Read current counter */
 	exynos_read_ppc(data);
 
-	stat->current_frequency = data->devfreq->previous_freq;
-	stat->busy_time = data->um_data.val_pmcnt;
-	stat->total_time = data->um_data.val_ccnt;
-	stat->delta_time = data->last_monitor_period;
+	stat->current_frequency = data->previous_freq;
+	profile_data->busy_time = data->um_data.val_pmcnt;
+	profile_data->total_time = data->um_data.val_ccnt;
+	profile_data->delta_time = data->last_monitor_period;
 
-	data->last_um_usage_rate = div64_u64(stat->busy_time * 100, stat->total_time);
+	data->last_um_usage_rate = div64_u64(profile_data->busy_time * 100, profile_data->total_time);
 
 	ppc_dvfs_total_ccnt_alt += data->um_data.val_ccnt;
 	ppc_dvfs_total_pmcnt_alt += data->um_data.val_pmcnt;
@@ -194,6 +196,9 @@ static int exynos_devfreq_get_dev_status(struct device *dev, struct devfreq_dev_
 
 void register_get_dev_status(struct exynos_devfreq_data *data)
 {
+	data->devfreq->last_status.private_data =
+		kzalloc(sizeof(struct exynos_profile_data), GFP_KERNEL);
 	data->devfreq_profile.get_dev_status = exynos_devfreq_get_dev_status;
+
 	mutex_init(&ppc_dvfs_lock);
 }

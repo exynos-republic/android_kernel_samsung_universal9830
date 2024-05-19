@@ -21,7 +21,7 @@ struct ppc_data {
 	u64 pmcnt;
 };
 
-#if defined(CONFIG_EXYNOS_ALT_DVFS)
+#if defined(CONFIG_EXYNOS_ALT_DVFS) || defined(CONFIG_EXYNOS_ALT_DVFS_MODULE)
 int exynos_devfreq_um_init(struct exynos_devfreq_data *data);
 void exynos_devfreq_um_exit(struct exynos_devfreq_data *data);
 void register_get_dev_status(struct exynos_devfreq_data *data);
@@ -30,6 +30,7 @@ ktime_t exynos_devfreq_get_ppc_status(struct exynos_devfreq_data *data);
 #define exynos_devfreq_um_init(a) do {} while(0)
 #define exynos_devfreq_um_exit(a) do {} while(0)
 #define register_get_dev_status(a) do {} while(0)
+#define exynos_devfreq_get_ppc_status(a) do {} while(0)
 #endif
 
 #endif /* __DEVFREQ_EXYNOS_PPMU_H */
