@@ -1,14 +1,6 @@
 #ifndef __EXYNOS_ADV_TRACER_IPC_H_
 #define __EXYNOS_ADV_TRACER_IPC_H_
 
-#include <linux/platform_device.h>
-
-struct adv_tracer_info {
-	unsigned int plugin_num;
-	struct device *dev;
-	unsigned int enter_wfi;
-};
-
 struct adv_tracer_ipc_cmd_raw {
 	u32 cmd			:16;
 	u32 response		:1;
@@ -77,17 +69,18 @@ enum ipc_frmk_cmd {
 	EAT_IPC_CMD_CH_CLEAR,
 	EAT_IPC_CMD_BOOT_DBGC,
 	EAT_IPC_CMD_EXCEPTION_DBGC,
+	EAT_IPC_CMD_SEND_LOG,
 	EAT_IPC_CMD_FRM_LOAD_BINARY = 0x10ad,
 	EAT_IPC_CMD_ARRAYDUMP = 0x8080,
 };
 
 enum ipc_frmk_cmd_id {
-	ARR_IPC_CMD_ID_KERNEL_ARRAYDUMP = 0x1,
+	ARR_IPC_CMD_ID_KERNEL_ARRAYDUMP = 0xf,
 };
 
 #define EAT_MAX_CHANNEL				(8)
 #define EAT_FRM_CHANNEL				(0)
-#define EAT_IPC_TIMEOUT				(100 * NSEC_PER_MSEC)
+#define EAT_IPC_TIMEOUT				(500 * NSEC_PER_MSEC)
 
 #define INTGR0					0x0008
 #define INTCR0					0x000C
@@ -109,38 +102,61 @@ enum ipc_frmk_cmd_id {
 #define DBGC_INTMR				INTMR1
 #define DBGC_INTSR				INTSR1
 #define DBGC_INTMSR				INTMSR1
-#define SR(n)					(0x100 + (n << 2))
+#define SR(n)					(0x0080 + (n << 2))
 #define INTR_FLAG_OFFSET                        16
 #define FRAMEWORK_NAME				"FRM"
 
-#if IS_ENABLED(CONFIG_EXYNOS_ADV_TRACER)
+extern int adv_tracer_ipc_init(struct platform_device *pdev);
+
+#ifdef CONFIG_EXYNOS_ADV_TRACER
+int adv_tracer_arraydump(void);
 int adv_tracer_ipc_request_channel(struct device_node *np,
 		ipc_callback handler, unsigned int *id, unsigned int *len);
 int adv_tracer_ipc_release_channel(unsigned int id);
 int adv_tracer_ipc_send_data(unsigned int id, struct adv_tracer_ipc_cmd *cmd);
-int adv_tracer_ipc_send_data_polling(unsigned int id,
-			struct adv_tracer_ipc_cmd *cmd);
-int adv_tracer_ipc_send_data_polling_timeout(unsigned int id,
-			struct adv_tracer_ipc_cmd *cmd, 
-			unsigned long timeout_ns);
-int adv_tracer_ipc_send_data_async(unsigned int id,
-			struct adv_tracer_ipc_cmd *cmd);
+int adv_tracer_ipc_send_data_polling(unsigned int id, struct adv_tracer_ipc_cmd *cmd);
+int adv_tracer_ipc_send_data_polling_timeout(unsigned int id, struct adv_tracer_ipc_cmd *cmd,
+					unsigned long timeout_ns);
+int adv_tracer_ipc_send_data_async(unsigned int id, struct adv_tracer_ipc_cmd *cmd);
+void exynos_adv_tracer_reboot(void);
 void adv_tracer_ipc_release_channel_by_name(const char *name);
 #else
 static inline int adv_tracer_ipc_request_channel(struct device_node *np,
-			ipc_callback handler, unsigned int *id,
-			unsigned int *len) { return 0; }
-static inline int adv_tracer_ipc_release_channel(
-			unsigned int channel_id) { return 0; }
-static inline int adv_tracer_ipc_send_data(unsigned int id,
-			struct adv_tracer_ipc_cmd *cmd) { return 0; }
-static int adv_tracer_ipc_send_data_polling(unsigned int id,
-			struct adv_tracer_ipc_cmd *cmd) { return 0; }
-static int adv_tracer_ipc_send_data_polling_timeout(unsigned int id,
-			struct adv_tracer_ipc_cmd *cmd,
-			unsigned long timeout_ns) { return 0; }
-static int adv_tracer_ipc_send_data_async(unsigned int id,
-			struct adv_tracer_ipc_cmd *cmd) { return 0; }
-#define adv_tracer_ipc_release_channel_by_name(a)	do { } while (0)
+		ipc_callback handler, unsigned int *id, unsigned int *len)
+{
+	return 0;
+}
+static inline int adv_tracer_ipc_release_channel(unsigned int channel_id)
+{
+	return 0;
+}
+static inline int adv_tracer_ipc_send_data(unsigned int id, struct adv_tracer_ipc_cmd *cmd)
+{
+	return 0;
+}
+int adv_tracer_ipc_send_data_polling(unsigned int id, struct adv_tracer_ipc_cmd *cmd)
+{
+	return 0;
+}
+int adv_tracer_ipc_send_data_polling_timeout(unsigned int id, struct adv_tracer_ipc_cmd *cmd,
+					unsigned long timeout_ns)
+{
+	return 0;
+}
+int adv_tracer_ipc_send_data_async(unsigned int id, struct adv_tracer_ipc_cmd *cmd)
+{
+	return 0;
+}
+static inline void exynos_adv_tracer_reboot(void)
+{
+	return;
+}
+inline void adv_tracer_ipc_release_channel_by_name(const char *name)
+{
+}
+static inline int adv_tracer_arraydump(void)
+{
+	return -ENODEV;
+}
 #endif
 #endif

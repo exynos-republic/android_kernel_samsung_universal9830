@@ -40,7 +40,7 @@ struct secmem_region {
 	unsigned long	len;
 };
 
-#if IS_ENABLED(CONFIG_EXYNOS_CONTENT_PATH_PROTECTION)
+#if defined(CONFIG_EXYNOS_CONTENT_PATH_PROTECTION)
 void secmem_crypto_register(struct secmem_crypto_driver_ftn *ftn);
 void secmem_crypto_deregister(void);
 #else

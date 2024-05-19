@@ -31,13 +31,16 @@ struct itmon_notifier {
 #define S_NODE			(3)
 #define NODE_TYPE		(4)
 
-#if IS_ENABLED(CONFIG_EXYNOS_ITMON)
+#ifdef CONFIG_EXYNOS_ITMON
 extern void itmon_notifier_chain_register(struct notifier_block *n);
 extern void itmon_enable(bool enabled);
 extern void itmon_wa_enable(const char *node_name, int node_type, bool enabled);
+extern void itmon_set_errcnt(int cnt);
+extern int cal_pd_status(unsigned int id);
 #else
 static inline void itmon_enable(bool enabled) {}
 #define itmon_notifier_chain_register(x)		do { } while (0)
+#define itmon_set_errcnt(x)				do { } while (0)
 #define itmon_enable(x)					do { } while (0)
 #define itmon_wa_enable(a,b,c)				do { } while (0)
 #endif

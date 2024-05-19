@@ -14,10 +14,9 @@
 #ifndef __EXYNOS_MCINFO_H
 #define __EXYNOS_MCINFO_H
 
-#if IS_ENABLED(CONFIG_EXYNOS_MCINFO)
+#if defined(CONFIG_EXYNOS_MCINFO)
 unsigned int get_mcinfo_base_count(void);
 void get_refresh_rate(unsigned int *result);
-void update_ambient_status(unsigned int status);
 #else
 static inline
 unsigned int get_mcinfo_base_count(void)
@@ -26,11 +25,6 @@ unsigned int get_mcinfo_base_count(void)
 }
 static inline
 void get_refresh_rate(unsigned int *result)
-{
-	return;
-}
-static inline
-void update_ambient_status(unsigned int status)
 {
 	return;
 }

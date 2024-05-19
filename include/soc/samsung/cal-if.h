@@ -3,7 +3,7 @@
 
 #ifdef CONFIG_PWRCAL
 #include "../../../drivers/soc/samsung/pwrcal/pwrcal.h"
-struct exynos_pm_domain;
+
 static inline int cal_qch_init(unsigned int vclkid, unsigned int use_qch)
 {
 	return 0;
@@ -17,8 +17,6 @@ static inline int cal_if_init(void)
 #include "../../../drivers/soc/samsung/cal-if/pmucal_system.h"
 
 #define BLKPWR_MAGIC	0xB1380000
-
-extern int (*exynos_cal_pd_bcm_sync)(unsigned int id, bool on);
 
 extern unsigned int cal_clk_get(char *name);
 extern unsigned int cal_clk_is_enabled(unsigned int vclkid);
@@ -67,7 +65,6 @@ struct dvfs_rate_volt {
 };
 int cal_dfs_get_rate_asv_table(unsigned int id,
 					struct dvfs_rate_volt *table);
-extern int cal_dfs_get_freq_volt_table(unsigned int id, void *table, int size);
 extern void cal_dfs_set_volt_margin(unsigned int id, int volt);
 extern unsigned long cal_dfs_get_rate_by_member(unsigned int id,
 							char *member,
@@ -110,7 +107,6 @@ extern void cal_cp_disable_dump_pc_no_pg(void);
 extern int cal_init(void);
 extern int cal_if_init(void *);
 
-extern void cal_register_pd_lookup_cmu_id(void *(*func)(u32 cmu_id));
 /* It is for debugging. */
 #define cal_vclk_dbg_info(a)	do{} while(0);
 //extern void cal_vclk_dbg_info(unsigned int id);

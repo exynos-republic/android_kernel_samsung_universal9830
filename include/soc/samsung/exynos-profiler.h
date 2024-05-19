@@ -114,12 +114,6 @@ int init_freq_cstate_result(struct freq_cstate_result *fc_result, int depth, int
 }
 
 static inline
-void sync_snap_with_cur(u64 *state_in_freq, u64 *snap, int size)
-{
-	memcpy(snap, state_in_freq, sizeof(u64) * size);
-}
-
-static inline
 void make_snap_and_delta(u64 *state_in_freq,
 			u64 *snap, u64 *delta, int size)
 {
@@ -142,28 +136,27 @@ void make_snap_and_delta(u64 *state_in_freq,
 }
 
 static inline
-void sync_fcsnap_with_cur(struct freq_cstate *fc,
-		struct freq_cstate_snapshot *fc_snap, int size)
-{
-	int state;
-
-	for (state = 0; state < NUM_OF_CSTATE; state++) {
-		if (!fc->time[state])
-			continue;
-		memcpy(fc_snap->time[state],
-			fc->time[state], sizeof(ktime_t) * size);
-	}
-	/* udpate snapshot time */
-	fc_snap->last_snap_time = ktime_get();
-}
-
-static inline
 void make_snapshot_and_time_delta(struct freq_cstate *fc,
 			struct freq_cstate_snapshot *fc_snap,
 			struct freq_cstate_result *fc_result,
 			int size)
 {
 	int state, idx;
+	/* It means start profile, so just make snapshot */
+	if (!fc_snap->last_snap_time) {
+		for (state = 0; state < NUM_OF_CSTATE; state++) {
+			if (!fc->time[state])
+				continue;
+
+			memcpy(fc_snap->time[state],
+				fc->time[state], sizeof(ktime_t) * size);
+		}
+
+		/* udpate snapshot time */
+		fc_snap->last_snap_time = ktime_get();
+
+		return;
+	}
 
 	/* compute time_delta and make snapshot */
 	for (state = 0; state < NUM_OF_CSTATE; state++) {
@@ -203,8 +196,10 @@ void compute_freq_cstate_result(struct freq_table *freq_table,
 	s32 temp_weight = temp ? (temp * temp) : 1;
 	s32 temp_base_weight = temp ? ST_COST_BASE_TEMP_WEIGHT : 1;
 
-	if (unlikely(!fc_result->profile_time))
+	if (unlikely(!fc_result->profile_time)) {
+		pr_info("%s: profile_time is 0!!!!!!!!!!\n", __func__);
 		return;
+	}
 
 	for (state = 0; state < NUM_OF_CSTATE; state++) {
 		if (!fc_result->time[state])
@@ -262,11 +257,10 @@ static inline u32 get_idx_from_freq(struct freq_table *table,
 	return flag == RELATION_HIGH ? 0 : size - 1;
 }
 
-#define STATE_SCALE_CNT			(1 << 0)	/* ramainnig cnt even if freq changed */
-#define STATE_SCALE_TIME		(1 << 1)	/* scaling up/down time with changed freq */
-#define	STATE_SCALE_WITH_SPARE		(1 << 2)	/* freq boost with spare cap */
-#define	STATE_SCALE_WO_SPARE		(1 << 3)	/* freq boost without spare cap */
-#define	STATE_SCALE_WITH_ORG_CAP	(1 << 4)	/* freq boost with original capacity */
+#define STATE_SCALE_CNT		(1 << 0)	/* ramainnig cnt even if freq changed */
+#define STATE_SCALE_TIME	(1 << 1)	/* scaling up/down time with changed freq */
+#define	STATE_SCALE_WITH_SPARE	(1 << 2)	/* freq boost with spare cap */
+#define	STATE_SCALE_WO_SPARE	(1 << 3)	/* freq boost with spare cap */
 static inline
 void compute_power_freq(struct freq_table *freq_table, u32 size, s32 cur_freq_idx,
 		u64 *active_in_freq, u64 *clkoff_in_freq, u64 profile_time,
@@ -279,8 +273,10 @@ void compute_power_freq(struct freq_table *freq_table, u32 size, s32 cur_freq_id
 	s32 temp_weight = temp ? (temp * temp) : 1;
 	s32 temp_base_weight = temp ? ST_COST_BASE_TEMP_WEIGHT : 1;
 
-	if (unlikely(!profile_time))
+	if (unlikely(!profile_time)) {
+		pr_info("%s: profile_time is 0!!!!!!!!!!\n", __func__);
 		return;
+	}
 
 	for (idx = 0; idx < size; idx++) {
 		u64 time;
@@ -375,11 +371,8 @@ int get_boundary_freq_delta_ratio(struct freq_table *freq_table,
 
 static inline
 unsigned int get_freq_with_spare(struct freq_table *freq_table,
-	s32 max_freq_idx, s32 cur_freq, s32 freq_delta_ratio, s32 flag)
+		s32 max_freq_idx, s32 cur_freq, s32 freq_delta_ratio)
 {
-	if (flag & STATE_SCALE_WITH_ORG_CAP)
-		max_freq_idx = 0;
-
 	return cur_freq + ((freq_table[max_freq_idx].freq - cur_freq)
 					* freq_delta_ratio / RATIO_UNIT);
 }
@@ -404,7 +397,7 @@ int get_scaled_target_idx(struct freq_table *freq_table,
 	if (flag & STATE_SCALE_WITH_SPARE) {
 		if (freq_delta_ratio > 0)
 			target_freq = get_freq_with_spare(freq_table, max_freq_idx,
-							cur_freq, freq_delta_ratio, flag);
+							cur_freq, freq_delta_ratio);
 		else
 			target_freq = get_freq_wo_spare(freq_table, max_freq_idx,
 							cur_freq, freq_delta_ratio);
@@ -510,10 +503,7 @@ void get_power_change(struct freq_table *freq_table, s32 size,
 	s32 freq_delta_ratio, u64 profile_time, s32 temp, s32 flag,
 	u64 *scaled_dyn_power, u64 *scaled_st_power, u32 *scaled_active_freq)
 {
-	u64 *scaled_active_state, *scaled_clkoff_state;
-
-	scaled_active_state = kzalloc(sizeof(u64) * size, GFP_KERNEL);
-	scaled_clkoff_state = kzalloc(sizeof(u64) * size, GFP_KERNEL);
+	u64 scaled_active_state[size], scaled_clkoff_state[size];
 
 	/* copy state-in-freq table */
 	memcpy(scaled_active_state, active_state, sizeof(u64) * size);
@@ -528,13 +518,10 @@ void get_power_change(struct freq_table *freq_table, s32 size,
 	compute_power_freq(freq_table, size, cur_freq_idx,
 		scaled_active_state, scaled_clkoff_state, profile_time, temp,
 		scaled_dyn_power, scaled_st_power, scaled_active_freq, NULL);
-
-	kfree(scaled_active_state);
-	kfree(scaled_clkoff_state);
 }
 
 extern int exynos_build_static_power_table(struct device_node *np, int **var_table,
-		unsigned int *var_volt_size, unsigned int *var_temp_size, char *tz_name);
+		unsigned int *var_volt_size, unsigned int *var_temp_size);
 
 #define PWR_COST_CFVV	0
 #define PWR_COST_CVV	1
@@ -561,13 +548,16 @@ int init_static_cost(struct freq_table *freq_table, int size, int weight,
 	int volt_size, temp_size;
 	int *table = NULL;
 	int freq_idx, idx, ret = 0;
+	struct device_node *dvfs_node;
 
-	ret = exynos_build_static_power_table(np, &table, &volt_size, &temp_size, tz->type);
+	dvfs_node = of_parse_phandle(np, "dvfs-node", 0);
+
+	ret = exynos_build_static_power_table(dvfs_node, &table, &volt_size, &temp_size);
 	if (ret) {
 		int cal_id, ratio, asv_group, static_coeff;
-		int ratio_table[9] = { 5, 6, 8, 11, 15, 20, 27, 36, 48 };
+		int ratio_table[9] = { 2, 3, 4, 6, 8, 11, 16, 22, 31 };
 
-		pr_info("%s: there is no static power table for %s\n", tz->type);
+		pr_info("%s: there is no static power table for %s\n", __func__, tz->type);
 
 		// Make static power table from coeff and ids
 		if (of_property_read_u32(np, "cal-id", &cal_id)) {
@@ -585,7 +575,6 @@ int init_static_cost(struct freq_table *freq_table, int size, int weight,
 		ratio = cal_asv_get_ids_info(cal_id);
 		asv_group = cal_asv_get_grp(cal_id);
 
-
 		if (asv_group < 0 || asv_group > 8)
 			asv_group = 5;
 
@@ -598,10 +587,8 @@ int init_static_cost(struct freq_table *freq_table, int size, int weight,
 		for (idx = 0; idx < size; idx++) {
 			freq_table[idx].st_cost = pwr_cost(freq_table[idx].freq,
 					freq_table[idx].volt, static_coeff, PWR_COST_CVV) / weight;
-#ifdef CONFIG_EXYNOS_DEBUG_INFO
 			pr_info("freq_idx=%2d freq=%d, volt=%d cost=%8d\n",
 					idx, freq_table[idx].freq, freq_table[idx].volt, freq_table[idx].st_cost);
-#endif
 		}
 
 		return 0;
@@ -619,11 +606,9 @@ int init_static_cost(struct freq_table *freq_table, int size, int weight,
 			cost = *(table + ((temp_size + 1) * idx + 1));
 			cost = cost / weight;
 			freq_table[freq_idx].st_cost = cost;
-#ifdef CONFIG_EXYNOS_DEBUG_INFO
 			pr_info("freq_idx=%2d freq=%d, volt=%d dtm_volt=%d, cost=%8d\n",
 					freq_idx, freq_table[freq_idx].freq, freq_table_volt,
 					dtm_volt, cost);
-#endif
 			break;
 		}
 	}

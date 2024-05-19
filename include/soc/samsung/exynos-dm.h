@@ -26,19 +26,35 @@ enum exynos_dm_type {
 	DM_CPU_CL2,
 	DM_MIF,
 	DM_INT,
-	DM_NPU,
-	DM_DSU,
-	DM_DISP,
-	DM_AUD,
-	DM_GPU,
 	DM_INTCAM,
 	DM_CAM,
-	DM_CSIS,
-	DM_VPC,
+	DM_DSP,
+	DM_DNC,
+	DM_DISP,
+	DM_AUD,
 	DM_MFC,
-	DM_ISP,
-	DM_MFC1,
+	DM_NPU,
+	DM_GPU,
+	DM_TNR,
 	DM_TYPE_END
+};
+
+static const char dm_type_name[DM_TYPE_END][EXYNOS_DM_TYPE_NAME_LEN] = {
+	"dm_cpu_cl0",
+	"dm_cpu_cl1",
+	"dm_cpu_cl2",
+	"dm_mif",
+	"dm_int",
+	"dm_intcam",
+	"dm_cam",
+	"dm_dsp",
+	"dm_dnc",
+	"dm_disp",
+	"dm_aud",
+	"dm_mfc",
+	"dm_npu",
+	"dm_gpu",
+	"dm_tnr",
 };
 
 enum exynos_constraint_type {
@@ -86,7 +102,7 @@ struct exynos_dm_constraint {
 
 struct exynos_dm_data {
 	bool				available;		/* use for DVFS domain available */
-#if defined(CONFIG_EXYNOS_ACPM) || defined(CONFIG_EXYNOS_ACPM_MODULE)
+#ifdef CONFIG_EXYNOS_ACPM
 	bool				policy_use;
 #endif
 	int		dm_type;
@@ -111,7 +127,7 @@ struct exynos_dm_data {
 	struct list_head		min_masters;
 	struct list_head		max_masters;
 
-#if defined(CONFIG_EXYNOS_ACPM) || defined(CONFIG_EXYNOS_ACPM_MODULE)
+#ifdef CONFIG_EXYNOS_ACPM
 	u32				cal_id;
 #endif
 
@@ -132,18 +148,18 @@ struct exynos_dm_device {
 };
 
 /* External Function call */
-#if defined(CONFIG_EXYNOS_DVFS_MANAGER) || defined(CONFIG_EXYNOS_DVFS_MANAGER_MODULE)
-extern int exynos_dm_data_init(int dm_type, void *data,
+#if defined(CONFIG_EXYNOS_DVFS_MANAGER)
+int exynos_dm_data_init(int dm_type, void *data,
 			u32 min_freq, u32 max_freq, u32 cur_freq);
-extern int register_exynos_dm_constraint_table(int dm_type,
+int register_exynos_dm_constraint_table(int dm_type,
 				struct exynos_dm_constraint *constraint);
-extern int unregister_exynos_dm_constraint_table(int dm_type,
+int unregister_exynos_dm_constraint_table(int dm_type,
 				struct exynos_dm_constraint *constraint);
-extern int register_exynos_dm_freq_scaler(int dm_type,
+int register_exynos_dm_freq_scaler(int dm_type,
 			int (*scaler_func)(int dm_type, void *devdata, u32 target_freq, unsigned int relation));
-extern int unregister_exynos_dm_freq_scaler(int dm_type);
-extern int policy_update_call_to_DM(int dm_type, u32 min_freq, u32 max_freq);
-extern int DM_CALL(int dm_type, unsigned long *target_freq);
+int unregister_exynos_dm_freq_scaler(int dm_type);
+int policy_update_call_to_DM(int dm_type, u32 min_freq, u32 max_freq);
+int DM_CALL(int dm_type, unsigned long *target_freq);
 extern void exynos_dm_dynamic_disable(int flag);
 #else
 static inline

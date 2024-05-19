@@ -16,9 +16,6 @@
 #define EXYNOS_MIN_TEMP		10
 #define EXYNOS_COLD_TEMP	15
 
-/* invalid cooling frequency */
-#define THERMAL_CFREQ_INVALID -1
-
 enum tmu_noti_state_t {
 	TMU_NORMAL,
 	TMU_COLD,
@@ -48,7 +45,15 @@ enum isp_noti_state_t {
 	ISP_TRIPPING,
 };
 
-#if defined(CONFIG_GPU_THERMAL) || defined(CONFIG_GPU_THERMAL_MODULE)
+#ifdef CONFIG_EXYNOS_THERMAL_V2
+extern int exynos_tmu_add_notifier(struct notifier_block *n);
+#else
+static inline int exynos_tmu_add_notifier(struct notifier_block *n)
+{
+	return 0;
+}
+#endif
+#if defined(CONFIG_GPU_THERMAL)
 extern int exynos_gpu_add_notifier(struct notifier_block *n);
 #else
 static inline int exynos_gpu_add_notifier(struct notifier_block *n)
@@ -56,7 +61,7 @@ static inline int exynos_gpu_add_notifier(struct notifier_block *n)
 	return 0;
 }
 #endif
-#if defined(CONFIG_ISP_THERMAL) || defined(CONFIG_ISP_THERMAL_MODULE)
+#if defined(CONFIG_ISP_THERMAL)
 extern int exynos_tmu_isp_add_notifier(struct notifier_block *n);
 #else
 static inline int exynos_tmu_isp_add_notifier(struct notifier_block *n)
@@ -64,10 +69,4 @@ static inline int exynos_tmu_isp_add_notifier(struct notifier_block *n)
 	return 0;
 }
 #endif
-
-#if IS_ENABLED(CONFIG_SEC_PM)
-extern void exynos_tmu_show_curr_temp(void);
-#else
-static inline void exynos_tmu_show_curr_temp(void) {}
-#endif /* CONFIG_SEC_PM */
 #endif /* __ASM_ARCH_TMU_H */

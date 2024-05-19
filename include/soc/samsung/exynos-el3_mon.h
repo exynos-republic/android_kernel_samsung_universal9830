@@ -25,7 +25,7 @@
 
 #define RUNTIME_PM_TZPC_GROUP			(2)
 
-extern int exynos_pd_tz_save(unsigned int addr);
-extern int exynos_pd_tz_restore(unsigned int addr);
+int exynos_pd_tz_save(unsigned int addr);
+int exynos_pd_tz_restore(unsigned int addr);
 
 #endif	/* __EXYNOS_EL3_MON_H */

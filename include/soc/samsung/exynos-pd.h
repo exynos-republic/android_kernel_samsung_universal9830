@@ -29,9 +29,7 @@
 #include <linux/debugfs.h>
 
 #include <linux/mfd/samsung/core.h>
-#if defined(CONFIG_EXYNOS_BCM_DBG) || defined(CONFIG_EXYNOS_BCM_DBG_MODULE)
 #include <soc/samsung/exynos-bcm_dbg.h>
-#endif
 
 #include <soc/samsung/exynos-cpupm.h>
 #include <dt-bindings/power/exynos-power.h>
@@ -44,7 +42,7 @@
 #endif
 
 #ifdef CONFIG_EXYNOS_PM_DOMAIN_DEBUG
-#define DEBUG_PRINT_INFO(fmt, ...) printk(EXYNOS_PD_DBG_PREFIX pr_fmt(fmt), ##__VA_ARGS__)
+#define DEBUG_PRINT_INFO(fmt, ...) printk(PM_DOMAIN_PREFIX pr_fmt(fmt), ##__VA_ARGS__)
 #else
 #define DEBUG_PRINT_INFO(fmt, ...)
 #endif
@@ -66,14 +64,12 @@ struct exynos_pm_domain {
 	int devfreq_index;
 	struct mutex access_lock;
 	int idle_ip_index;
-#if defined(CONFIG_EXYNOS_BCM_DBG) || defined(CONFIG_EXYNOS_BCM_DBG_MODULE)
+#if defined(CONFIG_EXYNOS_BCM_DBG)
 	struct exynos_bcm_pd_info *bcm;
 #endif
 	bool power_down_skipped;
 	unsigned int need_smc;
-	unsigned int cmu_id;
 	bool skip_idle_ip;
-	struct list_head epd_list_node;	/* Node in the global PM domains list */
 };
 
 struct exynos_pd_dbg_info {
@@ -84,33 +80,24 @@ struct exynos_pd_dbg_info {
 #endif
 };
 
-#if defined(CONFIG_EXYNOS_PD) || defined(CONFIG_EXYNOS_PD_MODULE)
+#ifdef CONFIG_EXYNOS_PD
 struct exynos_pm_domain *exynos_pd_lookup_name(const char *domain_name);
-#ifdef CONFIG_DEBUG_FS
-void *exynos_pd_lookup_cmu_id(u32 cmu_id);
-#endif
 int exynos_pd_status(struct exynos_pm_domain *pd);
 #else
 static inline struct exynos_pm_domain *exynos_pd_lookup_name(const char *domain_name)
 {
 	return NULL;
 }
-#ifdef CONFIG_DEBUG_FS
-static inline void *exynos_pd_lookup_cmu_id(u32 cmu_id)
-{
-	return NULL;
-}
-#endif
 static inline int exynos_pd_status(struct exynos_pm_domain *pd)
 {
 	return 1;
 }
 #endif
 
-#if defined(CONFIG_SND_SOC_SAMSUNG_VTS) || defined(CONFIG_SND_SOC_SAMSUNG_VTS_MODULE)
+#ifdef CONFIG_SND_SOC_SAMSUNG_VTS
 extern bool vts_is_on(void);
 #endif
-#if defined(CONFIG_SND_SOC_SAMSUNG_ABOX) || defined(CONFIG_SND_SOC_SAMSUNG_ABOX_MODULE)
+#ifdef CONFIG_SND_SOC_SAMSUNG_ABOX
 extern bool abox_is_on(void);
 #endif
 #ifdef CONFIG_USB_DWC3_EXYNOS

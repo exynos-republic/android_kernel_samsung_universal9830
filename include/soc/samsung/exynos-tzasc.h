@@ -20,7 +20,7 @@
 /* TZASC Interrupt Status Register */
 #define TZASC_INTR_STATUS_OVERLAP_MASK			(1 << 16)
 #define TZASC_INTR_STATUS_OVERRUN_MASK			(1 << 8)
-#define TZASC_INTR_STATUS_STAT_MASK			(1 << 1)
+#define TZASC_INTR_STATUS_STAT_MASK			(1 << 0)
 
 /* TZASC Fail Address High Register */
 #define TZASC_FAIL_ADDR_HIGH_MASK			(0xFF << 0)

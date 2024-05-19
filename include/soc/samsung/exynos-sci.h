@@ -32,38 +32,38 @@
 #define PM_SCI_CTL				0x140
 #define SCI_SB_LLCSTATUS			0xA0C
 
-#define ECC_INT_EN				0x934
-#define UcErrMiscInfo                           0x950
-#define UcErrOverrunMiscInfo                    0x964
-#define CorrErrSource0                          0x914
-#define CorrErrSource1                          0x918
-#define CorrErrMiscInfo                         0x91C
-#define CorrErrAddrLow                          0x920
-#define CorrErrAddrHigh                         0x924
-#define CorrErrOverrunSource0                   0x928
-#define CorrErrOverrunSource1                   0x92C
-#define CorrErrOverrunMiscInfo                  0x930
-
-/* ECC_INT_EN */
-#define SF_PARITY_SHIFT				(13)
-#define LLC_ECC_SHIFT				(12)
-#define PROT_ERR_SHIFT				(10)
-
-/* UcErrMiscInfo */
-#define UEMI_SHIFT				(18)
-
-/* UcErrOverrunMiscInfo */
-#define UEOMI_SHIFT				(15)
-
-#define ERR_MASK				(0xF)
+#define UcErrSource1				0x94C
+#define UcErrOverrunSource1			0x960
+#define CorrErrSource1				0x918
+#define CorrErrOverrunSource1			0x92C
 
 #define SCI_BIT_GET(value, mask, shift)		((value >> shift) & mask)
+
+#define DBE					30
+#define SBE					21
+#define LLC_ECC_MASK				0x3
+/* UcErrSource1Uc, ErrOverrunSource1,	 *
+ * CorrErrSource1, CorrErrOverrunSource1 */
+#define mpACE_MASK				0xF
+#define mpACE_SHIFT				0
+#define nonSFS_MASK				0x1FF
+#define nonSFS_SHIFT				4
+#define SFS_MASK				0xFF
+#define SFS_SHIFT				13
+/* UcErrSource1Uc, ErrOverrunSource1 only */
+#define PE_MASK					0xF
+#define PE_SHIFT				21
+#define RE_MASK					0xF
+#define RE_SHIFT				26
+/* CorrErrSource1, CorrErrOverrunSource1 only */
+#define SFP_MASK				0x3
+#define SFP_SHIFT				23
+
+
 
 #define LLC_En_Bit				(25)
 #define DisableLlc_Bit				(9)
 
-#define FULL_WAY_NUM				(16)
-#define SYSFS_FLUSH_REGION_INDEX		(0)
 #define FULL_INV				0xFFFF
 #define TOPWAY					0xFF00
 #define BOTTOMWAY				0x00FF
@@ -101,9 +101,6 @@ enum exynos_sci_cmd_index {
 	SCI_LLC_EN,
 	SCI_RET_EN,
 	SCI_LLC_REGION_DEALLOC,
-	SCI_LLC_REGION_PRIORITY,
-	SCI_LLC_GET_REGION_INFO,
-	SCI_LLC_CPU_MIN_REGION,
 	SCI_CMD_MAX,
 };
 
@@ -120,24 +117,11 @@ enum exynos_sci_ipc_dir {
 
 enum exynos_sci_llc_region_index {
 	LLC_REGION_DISABLE = 0,
-	LLC_REGION_CPU, /* default policy */
 	LLC_REGION_CALL,
-	LLC_REGION_OFFLOAD,
-	LLC_REGION_CPD2,
-	LLC_REGION_CPCPU,
-	LLC_REGION_DPU,
-	LLC_REGION_MFC0_INT,
-	LLC_REGION_MFC1_INT,
-	LLC_REGION_MFC0_DPB,
-	LLC_REGION_MFC1_DPB,
-	LLC_REGION_GPU,
-	LLC_REGION_NPU0,
-	LLC_REGION_NPU1,
-	LLC_REGION_NPU2,
-	LLC_REGION_DSP0,
-	LLC_REGION_DSP1,
-	LLC_REGION_CAM_MCFP,
-	LLC_REGION_CAM_CSIS,
+	LLC_REGION_LIT_MID_ALL,
+	LLC_REGION_OFFLOAD_PLAY,
+	LLC_REGION_MFC_DISPLAY,
+	LLC_REGION_NPU,
 	LLC_REGION_MAX,
 };
 
@@ -169,23 +153,6 @@ struct exynos_llc_dump_addr {
         void __iomem                    *v_addr;
 };
 
-struct exynos_sci_gov_data {
-	struct mutex			lock;
-	struct delayed_work		get_noti_work;
-	unsigned int			llc_gov_en;
-	unsigned int			en_cnt;
-	unsigned int			llc_req_flag;
-	unsigned int			hfreq_rate;
-	unsigned int			freq_th;
-	unsigned int			on_time_th;
-	unsigned int			off_time_th;
-
-	u64				start_time;
-	u64				last_time;
-	u64				high_time;
-	u64				enabled_time;
-};
-
 struct exynos_sci_data {
 	struct device			*dev;
 	spinlock_t			lock;
@@ -197,41 +164,32 @@ struct exynos_sci_data {
 	unsigned int			initial_llc_region;
 	unsigned int			llc_enable;
 	unsigned int			ret_enable; /* retention */
-	unsigned int			cpu_min_region;
+	bool				llc_ecc_flag;
 
 	unsigned int			plugin_init_llc_region;
 	unsigned int			llc_region_prio[LLC_REGION_MAX];
 	unsigned int			invway;
-	bool				llc_ecc_flag;
+	unsigned int			way_array[LLC_REGION_MAX];
 
 	void __iomem			*sci_base;
 	struct exynos_llc_dump_addr	llc_dump_addr;
 	const char			*region_name[LLC_REGION_MAX];
-	unsigned int			region_priority[LLC_REGION_MAX];
-	struct exynos_sci_gov_data	*gov_data;
-	bool				llc_on_flag;
 };
 
-#if defined(CONFIG_EXYNOS_SCI) || defined(CONFIG_EXYNOS_SCI_MODULE)
-extern void llc_invalidate(unsigned int invway);
-extern void llc_flush(unsigned int invway);
-extern int llc_enable(bool on);
-extern int cam_llc_enable(bool on);
-extern int llc_get_en(void);
-extern void llc_ecc_logging(void);
-extern unsigned int llc_get_region_info(unsigned int region_index);
-extern unsigned int llc_region_alloc(unsigned int region_index, bool on, unsigned int way);
-extern int llc_off_disable(bool off);
+#ifdef CONFIG_EXYNOS_SCI
+void llc_invalidate(unsigned int invway);
+void llc_flush(unsigned int invway);
+void llc_region_alloc(unsigned int region_index, bool on);
+void llc_ecc_logging(void);
+void llc_dump(void);
+void sci_error_dump(void);
 #else
 #define llc_invalidate() do {} while (0)
 #define llc_flush() do {} while (0)
-#define llc_enable(a) do {} while (0)
-#define cam_llc_enable(a) do {} while (0)
-#define llc_get_en() do {} while (0)
-#define llc_ecc_logging() do {} while (0)
-#define llc_get_region_info(a) do {} while (0)
 #define llc_region_alloc(a, b) do {} while (0)
-#define llc_off_disable(a) do {} while (0)
+#define llc_dump() do {} while (0)
+#define sci_error_dump() do {} while (0)
+#define llc_ecc_logging() do {} while (0)
 #endif
 
 #endif	/* __EXYNOS_SCI_H_ */

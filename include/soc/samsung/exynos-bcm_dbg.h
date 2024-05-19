@@ -13,12 +13,11 @@
 
 #include <dt-bindings/soc/samsung/exynos-bcm_dbg.h>
 
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
-#define BCM_BIN_SIZE				(SZ_128K)
-#define BCM_BIN_NAME				"/system/vendor/firmware/fimc_is_lib.bin"
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
+#define BCM_BIN_SIZE				(SZ_32K)
+#define BCM_BIN_NAME				"/data/bcm.bin"
 #endif
 
-#define ERRCODE_ITMON_SLVERR			(0)
 #define ERRCODE_ITMON_TIMEOUT			(6)
 
 #define EXYNOS_BCM_DBG_MODULE_NAME		"exynos-bcm_dbg"
@@ -57,7 +56,7 @@
 #define BCM_EVT_PRE_DEFINE_MASK			(0x7)
 #define BCM_EVT_PRE_DEFINE_SHIFT		(6)
 #define BCM_IP_RANGE_SHIFT			(9)
-#define BCM_IP_MASK				(0x7F)
+#define BCM_IP_MASK				(0x3F)
 #define BCM_IP_SHIFT				(10)
 #define BCM_EVT_EVENT_MASK			(0xFF)
 #define BCM_EVT_EVENT_SHIFT(x)			(((x) >= 4) ? (((x) * 8) - 32) : ((x) * 8))
@@ -77,16 +76,6 @@
 #define BCM_EVT_STR_STATE_SHIFT			BCM_EVT_RUN_CONT_SHIFT
 #define BCM_EVT_IP_CONT_SHIFT			BCM_EVT_RUN_CONT_SHIFT
 #define BCM_EVT_GLBAUTO_SHIFT			BCM_EVT_RUN_CONT_SHIFT
-
-/* 2.7c, 2.7d */
-#define BCM_IP_D0_INDEX				7
-#define BCM_IP_D1_INDEX				8
-#define BCM_IP_D2_INDEX				9
-#define BCM_IP_D3_INDEX				10
-#define BCM_IP_DPUF0D0_INDEX			13
-#define BCM_IP_DPUF0D1_INDEX			14
-#define BCM_IP_DPUF1D0_INDEX			15
-#define BCM_IP_DPUF1D1_INDEX			16
 
 #define BCM_CMD_GET(cmd_data, mask, shift)	((cmd_data & (mask << shift)) >> shift)
 #define BCM_CMD_CLEAR(mask, shift)		(~(mask << shift))
@@ -126,14 +115,12 @@ enum exynos_bcm_event_id {
 	BCM_EVT_IP_CONT,
 	BCM_EVT_PERIOD_CONT,
 	BCM_EVT_MODE_CONT,
+	BCM_EVT_GLBAUTO_CONT,
 	BCM_EVT_EVENT_FLT_ID,
 	BCM_EVT_EVENT_FLT_OTHERS,
 	BCM_EVT_EVENT_SAMPLE_ID,
 	BCM_EVT_STR_STATE,
 	BCM_EVT_DUMP_ADDR,
-	BCM_EVT_GLBAUTO_CONT,
-	BCM_EVT_HISTOGRAM_ID,
-	BCM_EVT_HISTOGRAM_CONFIG,
 	BCM_EVT_MAX,
 };
 
@@ -199,6 +186,7 @@ struct exynos_bcm_dbg_data {
 	unsigned int			ipc_size;
 	struct exynos_bcm_pd_info	*pd_info[BCM_PD_INFO_MAX];
 	unsigned int			pd_size;
+	bool				pd_sync_init;
 
 	struct exynos_bcm_event		define_event[PRE_DEFINE_EVT_MAX];
 	unsigned int			default_define_event;
@@ -209,7 +197,6 @@ struct exynos_bcm_dbg_data {
 	struct exynos_bcm_sample_id	define_sample_id[PRE_DEFINE_EVT_MAX];
 
 	unsigned int			bcm_ip_nr;
-	unsigned int			bcm_ip_print_nr;
 	unsigned int			initial_bcm_run;
 	unsigned int			initial_period;
 	unsigned int			initial_bcm_mode;
@@ -218,7 +205,7 @@ struct exynos_bcm_dbg_data {
 
 	unsigned int			bcm_run_state;
 	bool				available_stop_owner[STOP_OWNER_MAX];
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
 	bool				bcm_load_bin;
 	struct hrtimer			bcm_hrtimer;
 	unsigned int			period;
@@ -251,7 +238,7 @@ struct exynos_bcm_calc {
 	unsigned int usage_cnt;
 };
 
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
 struct cmd_data {
 	unsigned int raw_cmd;
 	unsigned int cmd[CMD_DATA_MAX];
@@ -271,31 +258,27 @@ struct os_system_func {
 };
 #endif
 
-#if defined(CONFIG_EXYNOS_BCM_DBG) || defined(CONFIG_EXYNOS_BCM_DBG_MODULE)
+#ifdef CONFIG_EXYNOS_BCM_DBG
 int exynos_bcm_dbg_ipc_send_data(enum exynos_bcm_dbg_ipc_type ipc_type,
 				struct exynos_bcm_dbg_data *data,
 				unsigned int *cmd);
 int exynos_bcm_dbg_pd_sync(unsigned int cal_pdid, bool on);
 void exynos_bcm_dbg_start(void);
 void exynos_bcm_dbg_stop(unsigned int bcm_stop_owner);
-
-/* For MIF profiler */
 void exynos_bcm_get_data(u64 *rwdata_transfer, u64 *rdata_transfer_cnt, u64
-		*rdata_latency_sum, u64 *output_bw);
+				*rdata_latency_sum, u64 *output_bw);
 bool exynos_bcm_calc_enable(int enable);
 #else
 #define exynos_bcm_dbg_pd(a, b) do {} while (0)
 #define exynos_bcm_dbg_ipc_send_data(a, b, c) do {} while (0)
 #define exynos_bcm_dbg_start() do {} while (0)
 #define exynos_bcm_dbg_stop(a) do {} while (0)
-#define exynos_bcm_get_data(a, b, c, d) do {} while (0)
-#define exynos_bcm_calc_enable(a) do {} while (0)
 #endif
 
-#if defined(CONFIG_EXYNOS_BCM_DBG_GNR) || defined(CONFIG_EXYNOS_BCM_DBG_GNR_MODULE)
-int __nocfi exynos_bcm_dbg_load_bin(void);
+#ifdef CONFIG_EXYNOS_BCM_DBG_GNR
+int exynos_bcm_dbg_load_bin(void);
 #else
-#define exynos_bcm_dbg_load_bin() do {} while (0)
+#define exynos_bcm_dbg_load_bin(a) do {} while (0)
 #endif
 
 #endif	/* __EXYNOS_BCM_DBG_H_ */

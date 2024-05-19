@@ -27,8 +27,7 @@ static char *domain_name[] = {
 };
 
 struct private_fn_cpu {
-	s32 (*cpu_active_pct)(s32 id, s32 *cpu_active_pct);
-	s32 (*cpu_asv_ids)(s32 id);
+	u64 (*get_stall_pct)(s32 id);
 };
 
 struct private_fn_gpu {
@@ -39,9 +38,7 @@ struct private_fn_gpu {
 struct private_fn_mif {
 	u64 (*get_stats0_sum)(void);
 	u64 (*get_stats0_avg)(void);
-	u64 (*get_stats1_sum)(void);
 	u64 (*get_stats_ratio)(void);
-	u64 (*get_llc_status)(void);
 };
 
 struct domain_fn {
@@ -60,9 +57,5 @@ struct domain_fn {
 };
 
 extern int exynos_migov_register_domain(int id, struct domain_fn *fn, void *pd_fn);
-extern void exynos_migov_register_frame_cnt(void (*fn)(u64 *cnt, ktime_t *time));
-extern void exynos_migov_register_fence_cnt(void (*fn)(u64 *cnt, ktime_t *time));
-extern void exynos_migov_register_vsync_cnt(void (*fn)(u64 *cnt, ktime_t *time));
-extern void migov_update_fps_change(u32 new_fps);
 
 #endif /* __EXYNOS_MIGOV_H */

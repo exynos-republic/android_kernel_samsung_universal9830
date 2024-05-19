@@ -33,7 +33,7 @@ struct exynos_bcm_dump_info {
 	struct exynos_bcm_out_data	out_data;
 } __attribute__((packed));
 
-#if defined(CONFIG_EXYNOS_BCM_DBG_DUMP) || defined(CONFIG_EXYNOS_BCM_DBG_DUMP_MODULE)
+#ifdef CONFIG_EXYNOS_BCM_DBG_DUMP
 int exynos_bcm_dbg_buffer_dump(struct exynos_bcm_dbg_data *data, bool klog);
 #else
 #define exynos_bcm_dbg_buffer_dump(a, b) do {} while (0)

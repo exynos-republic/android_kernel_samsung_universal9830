@@ -33,17 +33,26 @@ struct exynos_cpu_power_ops {
 };
 extern struct exynos_cpu_power_ops exynos_cpu;
 
+#define phy_cluster(cpu)	MPIDR_AFFINITY_LEVEL(cpu_logical_map(cpu), 1)
+#define phy_cpu(cpu)		MPIDR_AFFINITY_LEVEL(cpu_logical_map(cpu), 0)
+
 /**
  * The APIs to control the PMU
  */
-#if defined(CONFIG_EXYNOS_PMU_IF) || defined(CONFIG_EXYNOS_PMU_IF_MODULE)
+#ifdef CONFIG_EXYNOS_PMU
 extern int exynos_pmu_read(unsigned int offset, unsigned int *val);
 extern int exynos_pmu_write(unsigned int offset, unsigned int val);
 extern int exynos_pmu_update(unsigned int offset, unsigned int mask, unsigned int val);
 
 extern void exynos_cpu_reset_enable(unsigned int cpu);
 extern void exynos_cpu_reset_disable(unsigned int cpu);
+
+#ifdef CONFIG_CP_PMUCAL
 extern int exynos_check_cp_status(void);
+#else
+static inline int exynos_check_cp_status(void) {return 1;}
+#endif
+
 #else
 static inline int exynos_pmu_read(unsigned int offset, unsigned int *val) {return 0;}
 static inline int exynos_pmu_write(unsigned int offset, unsigned int val) {return 0;}
@@ -51,6 +60,6 @@ static inline int exynos_pmu_update(unsigned int offset, unsigned int mask, unsi
 
 static inline void exynos_cpu_reset_enable(unsigned int cpu) {return ;}
 static inline void exynos_cpu_reset_disable(unsigned int cpu) {return ;}
-static inline int exynos_check_cp_status(void) {return 0;}
+static inline int exynos_check_cp_status(void) {return 1;}
 #endif
 #endif /* __EXYNOS_PMU_H */
