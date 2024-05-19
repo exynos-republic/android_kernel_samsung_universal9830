@@ -29,6 +29,13 @@ static void sec_ts_read_info_work(struct work_struct *work);
 static void sec_ts_print_info_work(struct work_struct *work);
 
 #ifdef USE_OPEN_CLOSE
+#ifdef CONFIG_FB
+static int sec_ts_input_open_fb(struct input_dev *dev);
+static void sec_ts_input_close_fb(struct input_dev *dev);
+#endif
+static int sec_ts_input_open_node(struct input_dev *dev);
+static void sec_ts_input_close_node(struct input_dev *dev);
+
 static int sec_ts_input_open(struct input_dev *dev);
 static void sec_ts_input_close(struct input_dev *dev);
 #endif
@@ -2716,8 +2723,8 @@ static int sec_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 	ts->input_dev->name = "sec_touchscreen";
 	sec_ts_set_input_prop(ts, ts->input_dev, INPUT_PROP_DIRECT);
 #ifdef USE_OPEN_CLOSE
-	ts->input_dev->open = sec_ts_input_open;
-	ts->input_dev->close = sec_ts_input_close;
+	ts->input_dev->open = sec_ts_input_open_node;
+	ts->input_dev->close = sec_ts_input_close_node;
 #endif
 	ts->input_dev_touch = ts->input_dev;
 
@@ -3223,6 +3230,57 @@ i2c_error:
 }
 
 #ifdef USE_OPEN_CLOSE
+#ifdef CONFIG_FB
+static int sec_ts_input_open_fb(struct input_dev *dev)
+{
+	struct sec_ts_data *ts = input_get_drvdata(dev);
+
+	/* Only perform open if last fb status and current status are
+	   both close. This is to workaround the case when ambient
+	   display is triggered in screen off state.
+	   In all other cases we still need to perform a open/close to
+	   update the fingerprint status.
+	*/
+	if (ts->input_closed_fb && ts->input_closed)
+		sec_ts_input_open(ts->input_dev);
+	else
+		ts->input_closed ? sec_ts_input_close(ts->input_dev) : sec_ts_input_open(ts->input_dev);
+
+	ts->input_closed_fb = false;
+
+	return 0;
+}
+
+static void sec_ts_input_close_fb(struct input_dev *dev)
+{
+	struct sec_ts_data *ts = input_get_drvdata(dev);
+
+	sec_ts_input_close(ts->input_dev);
+
+	ts->input_closed_fb = true;
+}
+#endif
+
+static int sec_ts_input_open_node(struct input_dev *dev)
+{
+	struct sec_ts_data *ts = input_get_drvdata(dev);
+
+	sec_ts_input_open(ts->input_dev);
+
+	ts->input_closed_node = false;
+
+	return 0;
+}
+
+static void sec_ts_input_close_node(struct input_dev *dev)
+{
+	struct sec_ts_data *ts = input_get_drvdata(dev);
+
+	sec_ts_input_close(ts->input_dev);
+
+	ts->input_closed_node = true;
+}
+
 static int sec_ts_input_open(struct input_dev *dev)
 {
 	struct sec_ts_data *ts = input_get_drvdata(dev);
@@ -3540,11 +3598,19 @@ static int fb_notifier_callback(struct notifier_block *self,
 			/* Enable FOD when screen on or in AOD. */
 			if (!ts->fod_enabled && ts->plat_data->support_fod)
 				ts->lowpower_mode |= SEC_TS_MODE_SPONGE_PRESS;
+#ifdef USE_OPEN_CLOSE
+			/* Set input to open status. */
+			sec_ts_input_open_fb(ts->input_dev);
+#endif
 			break;
 		case FB_BLANK_POWERDOWN:
 			/* Disable FOD when screen off. */
 			if (!ts->fod_enabled && ts->plat_data->support_fod)
 				ts->lowpower_mode &= ~SEC_TS_MODE_SPONGE_PRESS;
+#ifdef USE_OPEN_CLOSE
+			/* Set input to close status. */
+			sec_ts_input_close_fb(ts->input_dev);
+#endif
 			break;
 		default:
 			/* Don't handle what we don't understand. */
